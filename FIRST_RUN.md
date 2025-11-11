@@ -1,0 +1,89 @@
+# Первый запуск проекта ERA
+
+## 1. Подготовьте окружение
+- Установите PostgreSQL и создайте пользователя/базу для разработки.
+- Установите tmux (используется скриптами): `sudo apt-get install tmux`.
+- Убедитесь, что установлен RVM и Ruby 3.2.2:
+
+```bash
+rvm install 3.2.2
+rvm use 3.2.2 --default
+```
+
+- Поставьте Node.js 18+, npm и pnpm (для фронтенда). Для Android-сборки (`era_native`) подготовьте:
+  - Android Studio с установленными SDK Platform (API 33+) и Build-Tools 33.x;
+  - command-line tools (`platform-tools`, `cmdline-tools/latest`) и настроенный `ANDROID_HOME` (`~/Android/Sdk`);
+  - Java 17 (Temurin/Zulu) в PATH;
+  - драйверы ADB и включённый USB debugging на устройстве.
+
+## 2. Клонируйте репозитории
+
+```bash
+mkdir -p ~/era
+cd ~/era
+git clone git@github.com:kmi9work/eraofchange.git
+git clone git@github.com:kmi9work/era_front.git
+git clone git@github.com:kmi9work/era_native.git
+git clone git@github.com:kmi9work/era_scripts.git
+```
+
+Все четыре репозитория должны лежать в одной папке (например, `~/era`), чтобы скрипты могли связать приложения.
+
+## 3. Настройте backend (`eraofchange`)
+
+```bash
+cd ~/era/eraofchange
+rvm use 3.2.2
+bundle install
+```
+
+- Скопируйте `config/database.yml.example` (если есть) или настройте `config/database.yml` под ваш PostgreSQL.
+- Создайте базы и загрузите данные:
+
+```bash
+bundle exec rake game:core
+bundle exec rake game:vassals
+```
+
+Первый таск подготавливает ядро (базовая Эпоха перемен), второй — плагин `vassals_and_robbers` (Короткая Эпоха перемен «Вассалы и разбойники»).
+
+## 4. Настройте frontend (`era_front`)
+
+```bash
+cd ~/era/era_front
+pnpm install    # или npm install, если pnpm недоступен (лучше установить pnpm)
+```
+
+Настраивать `.env` или `.env.development` не нужно — эти файлы генерируются автоматическими скриптами.
+
+## 5. Настройте мобильное приложение (`era_native`)
+
+```bash
+cd ~/era/era_native
+npm install
+```
+
+Настраивать `.env` или `.env.development` не нужно — эти файлы также создаются скриптами.
+
+## 6. Запустите систему
+
+```bash
+cd ~/era
+./era_scripts/start-dev.sh
+```
+
+Скрипт спросит:
+- какую игру активировать (ядро или `vassals_and_robbers`);
+- запускать ли мобильное приложение и на какое устройство.
+
+Backend стартует на `http://<IP вашей машины>:3000`, фронтенд — на `http://<IP>:5173`. Используйте локальный IP, чтобы подключиться с мобильных устройств в одной сети.
+
+## 7. Полезные команды
+- Остановить все сервисы: `./era_scripts/stop-dev.sh`
+- Запустить только базовую игру без вопросов: `./era_scripts/start-base-game.sh`
+- Запустить сразу Vassals and Robbers: `./era_scripts/start-vassals-game.sh`
+
+## 8. Проверка
+- Убедитесь, что tmux-сессия `era-dev` поднята: `tmux attach -t era-dev`.
+- Проверьте, что фронтенд и бэкенд отдают страницы, а мобильное приложение видит сервер по IP.
+

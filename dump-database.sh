@@ -52,11 +52,9 @@ echo -e "${GREEN}✓ Директория создана: ${DUMP_DIR}${NC}\n"
 
 # Generate timestamp for dump filename
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-DUMP_FILENAME="eraofchange_production_${TIMESTAMP}"
-REMOTE_DUMP_PATH="/tmp/${DUMP_FILENAME}.dump"
-REMOTE_SQL_DUMP_PATH="/tmp/${DUMP_FILENAME}.sql"
-LOCAL_DUMP_PATH="${DUMP_DIR}/${DUMP_FILENAME}.dump"
-LOCAL_SQL_DUMP_PATH="${DUMP_DIR}/${DUMP_FILENAME}.sql"
+DUMP_FILENAME="eraofchange_production_${TIMESTAMP}.sql"
+REMOTE_DUMP_PATH="/tmp/${DUMP_FILENAME}"
+LOCAL_DUMP_PATH="${DUMP_DIR}/${DUMP_FILENAME}"
 
 echo -e "${BLUE}=== Создание дампа базы данных ===${NC}"
 echo -e "${YELLOW}Сервер: ${USER}@${SERVER}${NC}"
@@ -73,21 +71,15 @@ ssh "${USER}@${SERVER}" "
     export PGPASSWORD=\"${DB_PASSWORD}\"
     echo '✓ Database password loaded from local config/database.key'
     
-    # Create dump in custom format (compressed, faster)
-    echo 'Creating database dump (custom format)...'
-    pg_dump -U ${DB_USER} -h localhost -d ${DB_NAME} -F c -f ${REMOTE_DUMP_PATH} || {
+    # Create SQL dump
+    echo 'Creating SQL dump...'
+    pg_dump -U ${DB_USER} -h localhost -d ${DB_NAME} -F p -f ${REMOTE_DUMP_PATH} || {
         echo 'Error: Failed to create database dump'
         exit 1
     }
     
-    # Also create a plain SQL dump for easier inspection
-    echo 'Creating SQL dump...'
-    pg_dump -U ${DB_USER} -h localhost -d ${DB_NAME} -F p -f ${REMOTE_SQL_DUMP_PATH} || {
-        echo 'Warning: Failed to create SQL dump, continuing with custom format only'
-    }
-    
     echo '✓ Database dump created successfully'
-    ls -lh ${REMOTE_DUMP_PATH} ${REMOTE_SQL_DUMP_PATH} 2>/dev/null || ls -lh ${REMOTE_DUMP_PATH}
+    ls -lh ${REMOTE_DUMP_PATH}
 "
 
 if [ $? -ne 0 ]; then
@@ -100,15 +92,10 @@ echo -e "${GREEN}✓ Дамп создан на сервере${NC}\n"
 # Step 2: Copy dump from server to local machine
 echo -e "${BLUE}Шаг 2: Копирование дампа с сервера...${NC}"
 
-# Copy custom format dump
+# Copy SQL dump
 scp "${USER}@${SERVER}:${REMOTE_DUMP_PATH}" "${LOCAL_DUMP_PATH}" || {
     echo -e "${RED}✗ Ошибка при копировании дампа${NC}"
     exit 1
-}
-
-# Copy SQL dump if it exists
-scp "${USER}@${SERVER}:${REMOTE_SQL_DUMP_PATH}" "${LOCAL_SQL_DUMP_PATH}" 2>/dev/null || {
-    echo -e "${YELLOW}⚠ SQL дамп не найден, используется только custom format${NC}"
 }
 
 echo -e "${GREEN}✓ Дамп скопирован локально${NC}\n"
@@ -118,7 +105,6 @@ echo -e "${BLUE}Шаг 3: Очистка временных файлов на с
 
 ssh "${USER}@${SERVER}" "
     rm -f ${REMOTE_DUMP_PATH}
-    rm -f ${REMOTE_SQL_DUMP_PATH}
     echo '✓ Temporary files removed'
 "
 
@@ -126,24 +112,17 @@ echo -e "${GREEN}✓ Временные файлы удалены${NC}\n"
 
 # Display summary
 echo -e "${GREEN}=== Дамп завершен успешно ===${NC}"
-echo -e "${BLUE}Локальные файлы:${NC}"
-if [ -f "${LOCAL_SQL_DUMP_PATH}" ]; then
-    echo -e "  ${GREEN}SQL дамп:${NC} ${LOCAL_SQL_DUMP_PATH}"
-    echo -e "    Размер: $(du -h "${LOCAL_SQL_DUMP_PATH}" | cut -f1)"
-fi
+echo -e "${BLUE}Локальный файл:${NC}"
 if [ -f "${LOCAL_DUMP_PATH}" ]; then
-    echo -e "  ${GREEN}Custom format:${NC} ${LOCAL_DUMP_PATH}"
+    echo -e "  ${GREEN}SQL дамп:${NC} ${LOCAL_DUMP_PATH}"
     echo -e "    Размер: $(du -h "${LOCAL_DUMP_PATH}" | cut -f1)"
 fi
 echo ""
 
 # Show how to restore
 echo -e "${YELLOW}Для восстановления базы данных используйте:${NC}"
-if [ -f "${LOCAL_SQL_DUMP_PATH}" ]; then
-    echo -e "  ${GREEN}SQL формат:${NC} psql -U ${DB_USER} -d ${DB_NAME} < ${LOCAL_SQL_DUMP_PATH}"
-fi
 if [ -f "${LOCAL_DUMP_PATH}" ]; then
-    echo -e "  ${GREEN}Custom формат:${NC} pg_restore -U ${DB_USER} -d ${DB_NAME} -c ${LOCAL_DUMP_PATH}"
+    echo -e "  ${GREEN}psql -U ${DB_USER} -d ${DB_NAME} < ${LOCAL_DUMP_PATH}${NC}"
 fi
 echo ""
 

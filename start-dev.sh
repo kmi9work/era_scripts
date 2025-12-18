@@ -119,11 +119,6 @@ detect_android_devices() {
     
     if [ ! -s /tmp/adb_devices.txt ]; then
         echo -e "${RED}Устройства не найдены${NC}"
-        echo -e "${YELLOW}Убедитесь что:${NC}"
-        echo "  - Устройство подключено по USB"
-        echo "  - Отладка по USB включена на устройстве"
-        echo "  - Драйверы установлены (для Windows)"
-        echo ""
         return 1
     fi
     
@@ -159,6 +154,79 @@ detect_android_devices() {
     return 0
 }
 
+# Function to check if emulator command is available
+check_emulator_available() {
+    if command -v emulator &> /dev/null; then
+        return 0
+    fi
+    
+    # Try to find emulator in common Android SDK locations
+    local possible_paths=(
+        "$HOME/Android/Sdk/emulator/emulator"
+        "$ANDROID_HOME/emulator/emulator"
+        "$ANDROID_SDK_ROOT/emulator/emulator"
+    )
+    
+    for path in "${possible_paths[@]}"; do
+        if [ -f "$path" ]; then
+            export PATH="$(dirname "$path"):$PATH"
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+# Function to list available AVDs
+list_avds() {
+    if ! check_emulator_available; then
+        return 1
+    fi
+    
+    emulator -list-avds 2>/dev/null
+}
+
+# Function to start an emulator
+start_emulator() {
+    local avd_name="$1"
+    
+    if ! check_emulator_available; then
+        echo -e "${RED}Команда emulator не найдена${NC}"
+        echo -e "${YELLOW}Убедитесь, что Android SDK установлен и emulator доступен${NC}"
+        return 1
+    fi
+    
+    echo -e "${YELLOW}Запуск эмулятора: ${GREEN}${avd_name}${NC}${YELLOW}...${NC}"
+    echo -e "${BLUE}Это может занять некоторое время...${NC}"
+    echo ""
+    
+    # Start emulator in background
+    emulator -avd "$avd_name" > /dev/null 2>&1 &
+    local emulator_pid=$!
+    
+    echo -e "${YELLOW}Ожидание готовности эмулятора...${NC}"
+    
+    # Wait for emulator to be ready (check every 2 seconds, max 120 seconds)
+    local max_wait=60
+    local waited=0
+    
+    while [ $waited -lt $max_wait ]; do
+        if adb devices | grep -q "emulator.*device$"; then
+            echo ""
+            echo -e "${GREEN}✓ Эмулятор готов!${NC}"
+            sleep 2  # Give it a moment to fully initialize
+            return 0
+        fi
+        echo -n "."
+        sleep 2
+        waited=$((waited + 2))
+    done
+    
+    echo ""
+    echo -e "${YELLOW}Эмулятор запускается слишком долго. Проверьте его состояние вручную.${NC}"
+    return 1
+}
+
 # Ask user about mobile app startup mode (unless already set)
 if [ -z "$MOBILE_CHOICE" ]; then
     echo -e "\n${YELLOW}Запустить мобильное приложение (era_native)?${NC}"
@@ -190,7 +258,113 @@ if [ "$MOBILE_CHOICE" = "1" ]; then
         
         # Detect and select Android device
         echo ""
-        if detect_android_devices; then
+        if ! detect_android_devices; then
+            # No devices found - ask about emulator
+            echo -e "${YELLOW}Убедитесь что:${NC}"
+            echo "  - Устройство подключено по USB"
+            echo "  - Отладка по USB включена на устройстве"
+            echo "  - Драйверы установлены (для Windows)"
+            echo ""
+            
+            # Check if emulator is available
+            if check_emulator_available; then
+                echo -e "${YELLOW}Запустить Android эмулятор?${NC}"
+                echo "  1) Да, запустить эмулятор"
+                echo "  2) Нет, продолжить без устройства"
+                echo ""
+                read -p "Выбор [1-2]: " EMULATOR_CHOICE
+                
+                if [ "$EMULATOR_CHOICE" = "1" ]; then
+                    # List available AVDs
+                    echo ""
+                    echo -e "${YELLOW}Доступные эмуляторы:${NC}"
+                    
+                    # Read AVDs into array (handles names with spaces)
+                    local avds=()
+                    while IFS= read -r avd_name; do
+                        [ -n "$avd_name" ] && avds+=("$avd_name")
+                    done < <(list_avds)
+                    
+                    if [ ${#avds[@]} -eq 0 ]; then
+                        echo -e "${RED}Эмуляторы не найдены${NC}"
+                        echo -e "${YELLOW}Создайте AVD через Android Studio или командную строку${NC}"
+                        echo -e "${YELLOW}Продолжаем без выбора конкретного устройства${NC}"
+                    elif [ ${#avds[@]} -eq 1 ]; then
+                        # Only one AVD available
+                        local selected_avd="${avds[0]}"
+                        echo -e "  ${GREEN}${selected_avd}${NC} (автоматически выбрано)"
+                        echo ""
+                        
+                        if start_emulator "$selected_avd"; then
+                            # Re-detect devices after emulator started
+                            if detect_android_devices; then
+                                device_count=${#DEVICES[@]}
+                                if [ $device_count -ge 1 ]; then
+                                    # Find the emulator device
+                                    for key in "${!DEVICES[@]}"; do
+                                        local dev_id="${DEVICES[$key]}"
+                                        if [[ $dev_id == emulator-* ]]; then
+                                            SELECTED_DEVICE="$dev_id"
+                                            echo -e "${GREEN}Эмулятор обнаружен: ${SELECTED_DEVICE}${NC}"
+                                            break
+                                        fi
+                                    done
+                                    # If not found by pattern, use first device
+                                    if [ -z "$SELECTED_DEVICE" ] && [ ${#DEVICES[@]} -ge 1 ]; then
+                                        SELECTED_DEVICE="${DEVICES[1]}"
+                                        echo -e "${GREEN}Выбрано устройство: ${SELECTED_DEVICE}${NC}"
+                                    fi
+                                fi
+                            fi
+                        fi
+                    else
+                        # Multiple AVDs - let user choose
+                        local i=1
+                        for avd in "${avds[@]}"; do
+                            echo -e "  ${i}) ${GREEN}${avd}${NC}"
+                            ((i++))
+                        done
+                        echo ""
+                        read -p "Выберите эмулятор [1-${#avds[@]}]: " AVD_CHOICE
+                        
+                        if [ -n "$AVD_CHOICE" ] && [ "$AVD_CHOICE" -ge 1 ] && [ "$AVD_CHOICE" -le ${#avds[@]} ]; then
+                            local selected_avd="${avds[$((AVD_CHOICE - 1))]}"
+                            echo ""
+                            
+                            if start_emulator "$selected_avd"; then
+                                # Re-detect devices after emulator started
+                                if detect_android_devices; then
+                                    device_count=${#DEVICES[@]}
+                                    if [ $device_count -ge 1 ]; then
+                                        # Find the emulator device
+                                        for key in "${!DEVICES[@]}"; do
+                                            local dev_id="${DEVICES[$key]}"
+                                            if [[ $dev_id == emulator-* ]]; then
+                                                SELECTED_DEVICE="$dev_id"
+                                                echo -e "${GREEN}Эмулятор обнаружен: ${SELECTED_DEVICE}${NC}"
+                                                break
+                                            fi
+                                        done
+                                        # If not found by pattern, use first device
+                                        if [ -z "$SELECTED_DEVICE" ] && [ ${#DEVICES[@]} -ge 1 ]; then
+                                            SELECTED_DEVICE="${DEVICES[1]}"
+                                            echo -e "${GREEN}Выбрано устройство: ${SELECTED_DEVICE}${NC}"
+                                        fi
+                                    fi
+                                fi
+                            fi
+                        else
+                            echo -e "${RED}Неверный выбор. Продолжаем без устройства${NC}"
+                        fi
+                    fi
+                else
+                    echo -e "${YELLOW}Продолжаем без выбора конкретного устройства${NC}"
+                fi
+            else
+                echo -e "${YELLOW}Эмулятор недоступен. Продолжаем без выбора конкретного устройства${NC}"
+            fi
+        else
+            # Devices found
             device_count=${#DEVICES[@]}
             
             if [ $device_count -eq 1 ]; then
@@ -207,8 +381,6 @@ if [ "$MOBILE_CHOICE" = "1" ]; then
                     echo -e "${RED}Неверный выбор. Будет использовано устройство по умолчанию${NC}"
                 fi
             fi
-        else
-            echo -e "${YELLOW}Продолжаем без выбора конкретного устройства${NC}"
         fi
     fi
 fi

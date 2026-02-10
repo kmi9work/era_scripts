@@ -28,6 +28,8 @@ PROXY_URL="https://epoha.igroteh.su/backend"
 # Mobile helper будет на new.igroteh.su и должен обращаться к epoha.igroteh.su/backend
 # ВАЖНО: На бэкенде нужно настроить CORS, чтобы разрешить запросы с new.igroteh.su
 MOBILE_PROXY_URL="https://epoha.igroteh.su/backend"
+# Noble helper будет на noble.igroteh.su и должен обращаться к epoha.igroteh.su/backend
+NOBLE_PROXY_URL="https://epoha.igroteh.su/backend"
 
 # Check if era_front directory exists
 if [ ! -d "$FRONTEND_DIR" ]; then
@@ -133,6 +135,66 @@ if [ -f "dist/logo.png" ]; then
 fi
 
 echo -e "${GREEN}✓ Mobile helper собран и подготовлен${NC}\n"
+
+# Step 2.5: Build noble helper with separate proxy URL
+echo -e "${BLUE}=== Шаг 2.5: Сборка noble_helper с отдельным proxy ===${NC}"
+NOBLE_DEPLOY_DIR="${FRONTEND_DIR}/dist_noble_deploy"
+NOBLE_DEPLOY_PATH="/opt/era/noble_helper"
+
+# Create temporary directory for noble deployment
+rm -rf "${NOBLE_DEPLOY_DIR}"
+mkdir -p "${NOBLE_DEPLOY_DIR}"
+
+# Configure .env file for noble helper build
+echo -e "${YELLOW}Настройка .env файла для noble helper...${NC}"
+rm -f .env.local .env.development .env.production
+cat > .env <<EOF
+VITE_PROXY=${NOBLE_PROXY_URL}
+VITE_ACTIVE_GAME=${GAME_VERSION}
+EOF
+cat > .env.production <<EOF
+VITE_PROXY=${NOBLE_PROXY_URL}
+VITE_ACTIVE_GAME=${GAME_VERSION}
+EOF
+echo -e "${GREEN}✓ .env файлы для noble helper настроены${NC}"
+echo -e "${BLUE}VITE_PROXY=${NOBLE_PROXY_URL}${NC}"
+
+# Build noble helper (Vite will process noble_helper.html entry point)
+echo -e "${YELLOW}Сборка noble helper...${NC}"
+rm -rf dist
+NODE_ENV=production pnpm build
+
+# Check if noble_helper.html exists in dist
+if [ ! -f "dist/noble_helper.html" ]; then
+    echo -e "${RED}Error: noble_helper.html not found in dist after noble build${NC}"
+    exit 1
+fi
+
+# Copy noble_helper.html and rename to index.html
+cp "dist/noble_helper.html" "${NOBLE_DEPLOY_DIR}/index.html"
+echo -e "${GREEN}✓ noble_helper.html скопирован${NC}"
+
+# Copy all assets (JS, CSS, images, etc.) - these will have correct VITE_PROXY embedded
+if [ -d "dist/assets" ]; then
+    cp -r "dist/assets" "${NOBLE_DEPLOY_DIR}/assets"
+    echo -e "${GREEN}✓ Assets скопированы${NC}"
+fi
+
+# Copy other static files that might be needed (favicon, images, etc.)
+if [ -d "dist/images" ]; then
+    cp -r "dist/images" "${NOBLE_DEPLOY_DIR}/images"
+fi
+if [ -f "dist/favicon.ico" ]; then
+    cp "dist/favicon.ico" "${NOBLE_DEPLOY_DIR}/"
+fi
+if [ -f "dist/loader.css" ]; then
+    cp "dist/loader.css" "${NOBLE_DEPLOY_DIR}/"
+fi
+if [ -f "dist/logo.png" ]; then
+    cp "dist/logo.png" "${NOBLE_DEPLOY_DIR}/"
+fi
+
+echo -e "${GREEN}✓ Noble helper собран и подготовлен${NC}\n"
 
 # Step 3: Build main app with correct proxy URL
 echo -e "${BLUE}=== Шаг 3: Сборка основного приложения ===${NC}"
@@ -245,9 +307,52 @@ ssh "${USER}@${SERVER}" "
     echo '✓ Старые releases удалены (оставлено последних 3)'
 "
 
-# Cleanup local temporary directory
+# Cleanup local temporary directory for mobile
 rm -rf "${MOBILE_DEPLOY_DIR}"
-echo -e "${GREEN}✓ Временная директория очищена${NC}\n"
+echo -e "${GREEN}✓ Временная директория для mobile helper очищена${NC}\n"
+
+# Step 6: Deploy noble helper to separate directory
+echo -e "${BLUE}=== Шаг 6: Загрузка noble_helper на сервер ===${NC}"
+echo -e "${YELLOW}Сервер: ${USER}@${SERVER}${NC}"
+echo -e "${YELLOW}Путь: ${NOBLE_DEPLOY_PATH}${NC}\n"
+
+# Create release directory with timestamp for noble
+NOBLE_RELEASE_DIR="${NOBLE_DEPLOY_PATH}/releases/${TIMESTAMP}"
+
+echo -e "${YELLOW}Создание release директории для noble helper на сервере...${NC}"
+ssh "${USER}@${SERVER}" "mkdir -p ${NOBLE_RELEASE_DIR}"
+
+# Upload noble deployment files to server using rsync
+echo -e "${YELLOW}Загрузка noble_helper на сервер...${NC}"
+rsync -avz --delete \
+    "${NOBLE_DEPLOY_DIR}/" \
+    "${USER}@${SERVER}:${NOBLE_RELEASE_DIR}/"
+
+echo -e "${GREEN}✓ Файлы noble_helper загружены на сервер${NC}"
+
+# Create symlink current -> release for noble
+echo -e "${YELLOW}Создание симлинка current для noble helper...${NC}"
+ssh "${USER}@${SERVER}" "
+    mkdir -p ${NOBLE_DEPLOY_PATH}
+    # Удаляем старую директорию или симлинк, если они существуют
+    rm -rf ${NOBLE_DEPLOY_PATH}/current
+    # Создаем новый симлинк
+    ln -sfn ${NOBLE_RELEASE_DIR} ${NOBLE_DEPLOY_PATH}/current
+"
+
+echo -e "${GREEN}✓ Симлинк для noble helper создан${NC}"
+
+# Cleanup old releases for noble (keep last 3)
+echo -e "${YELLOW}Очистка старых releases для noble helper...${NC}"
+ssh "${USER}@${SERVER}" "
+    cd ${NOBLE_DEPLOY_PATH}/releases 2>/dev/null || exit 0
+    ls -t | tail -n +4 | xargs -r rm -rf
+    echo '✓ Старые releases удалены (оставлено последних 3)'
+"
+
+# Cleanup local temporary directory for noble
+rm -rf "${NOBLE_DEPLOY_DIR}"
+echo -e "${GREEN}✓ Временная директория для noble helper очищена${NC}\n"
 
 # Cleanup old releases (keep last 3)
 echo -e "${YELLOW}Очистка старых releases...${NC}"
@@ -263,5 +368,6 @@ echo -e "${BLUE}Release: ${TIMESTAMP}${NC}"
 echo -e "${BLUE}Версия игры: ${GAME_VERSION}${NC}"
 echo -e "${BLUE}Основное приложение: ${DEPLOY_PATH}/current${NC}"
 echo -e "${BLUE}Mobile helper: ${MOBILE_DEPLOY_PATH}/current${NC}"
+echo -e "${BLUE}Noble helper: ${NOBLE_DEPLOY_PATH}/current${NC}"
 echo ""
 

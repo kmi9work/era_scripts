@@ -1,6 +1,5 @@
 #!/bin/bash
-# deploy-backend.sh - Деплой бэкенда eraofchange на production сервер
-# Поддерживает обе версии: base-game и vassals-and-robbers
+# deploy-artel.sh - Деплой бэкенда eraofchange на production сервер с игрой artel
 
 set -e
 
@@ -17,7 +16,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}=== ERA Backend Deployment ===${NC}\n"
+echo -e "${BLUE}=== ERA Backend Deployment (Artel) ===${NC}\n"
 
 # Configuration
 SERVER="${BACKEND_DEPLOY_SERVER:-62.173.148.168}"
@@ -29,40 +28,10 @@ RBENV_RUBY="3.2.2"
 PASSENGER_RUBY="/home/deploy/.rbenv/shims/ruby"
 KEEP_RELEASES=3
 
-# Ask user to choose game version
-echo -e "${YELLOW}Выберите версию игры для деплоя:${NC}"
-echo "  1) base-game"
-echo "  2) vassals-and-robbers"
-echo "  3) artel"
-echo ""
-read -p "Выбор [1-3]: " GAME_CHOICE
+GAME_VERSION="artel"
+RUN_ARTEL_SEEDS=true
 
-case "$GAME_CHOICE" in
-    1)
-        GAME_VERSION="base-game"
-        RUN_VASSALS_SEEDS=false
-        RUN_ARTEL_SEEDS=false
-        ;;
-    2)
-        GAME_VERSION="vassals-and-robbers"
-        RUN_VASSALS_SEEDS=true
-        RUN_ARTEL_SEEDS=false
-        ;;
-    3)
-        GAME_VERSION="artel"
-        RUN_VASSALS_SEEDS=false
-        RUN_ARTEL_SEEDS=true
-        ;;
-    *)
-        echo -e "${RED}Неверный выбор. Используется base-game по умолчанию.${NC}"
-        GAME_VERSION="base-game"
-        RUN_VASSALS_SEEDS=false
-        RUN_ARTEL_SEEDS=false
-        ;;
-esac
-
-echo ""
-echo -e "${GREEN}Выбрана версия: ${GAME_VERSION}${NC}\n"
+echo -e "${GREEN}Версия игры: ${GAME_VERSION}${NC}\n"
 
 # Check if master.key exists locally (for database password)
 if [ ! -f "$PROJECT_DIR/eraofchange/config/master.key" ]; then
@@ -199,9 +168,6 @@ ssh "${USER}@${SERVER}" "
     rm -rf tmp/pids && mkdir -p tmp && ln -sfn ${SHARED_DIR}/tmp/pids tmp/pids
     rm -rf tmp/cache && mkdir -p tmp && ln -sfn ${SHARED_DIR}/tmp/cache tmp/cache
     rm -rf tmp/sockets && mkdir -p tmp && ln -sfn ${SHARED_DIR}/tmp/sockets tmp/sockets
-    # Note: vendor/bundle should stay in release, not be symlinked
-    # Only vendor (if used for other purposes) can be symlinked
-    # rm -rf vendor && ln -sfn ${SHARED_DIR}/vendor vendor 2>/dev/null || true
     rm -rf storage && ln -sfn ${SHARED_DIR}/storage storage 2>/dev/null || true
     rm -rf public/system && mkdir -p public && ln -sfn ${SHARED_DIR}/public/system public/system 2>/dev/null || true
 "
@@ -214,9 +180,6 @@ ssh "${USER}@${SERVER}" "sudo systemctl stop passenger || true"
 echo -e "${GREEN}✓ Passenger остановлен${NC}\n"
 
 # Step 7: Migrations and seeds are not run automatically
-# They should be run separately when needed:
-# - For migrations: ssh deploy@server "cd /opt/era/eraofchange/current && bundle exec rake db:migrate"
-# - For seeds: ssh deploy@server "cd /opt/era/eraofchange/current && bundle exec rake db:seed:all"
 echo -e "${BLUE}=== Шаг 7: Миграции и сиды пропущены ===${NC}"
 echo -e "${YELLOW}Миграции и сиды не выполняются автоматически при деплое${NC}"
 echo -e "${YELLOW}Выполните их вручную при необходимости${NC}\n"
@@ -303,4 +266,5 @@ echo -e "${BLUE}Release: ${TIMESTAMP}${NC}"
 echo -e "${BLUE}Версия игры: ${GAME_VERSION}${NC}"
 echo -e "${BLUE}Путь на сервере: ${CURRENT_DIR}${NC}"
 echo ""
+
 

@@ -24,8 +24,9 @@ if [ -z "$GAME_CHOICE" ]; then
     echo -e "${YELLOW}Выберите игру для запуска:${NC}"
     echo "  1) base-game (Era of Change - базовая игра)"
     echo "  2) vassals-and-robbers (Vassals and Robbers - новая игра)"
+    echo "  3) artel (Artel - новая игра)"
     echo ""
-    read -p "Выбор [1-2]: " GAME_CHOICE
+    read -p "Выбор [1-3]: " GAME_CHOICE
 fi
 
 case "$GAME_CHOICE" in
@@ -36,6 +37,10 @@ case "$GAME_CHOICE" in
     2)
         ACTIVE_GAME="vassals-and-robbers"
         VITE_ACTIVE_GAME="vassals-and-robbers"
+        ;;
+    3)
+        ACTIVE_GAME="artel"
+        VITE_ACTIVE_GAME="artel"
         ;;
     *)
         echo -e "${YELLOW}Неверный выбор. Используется base-game${NC}"
@@ -280,7 +285,7 @@ if [ "$MOBILE_CHOICE" = "1" ]; then
                     echo -e "${YELLOW}Доступные эмуляторы:${NC}"
                     
                     # Read AVDs into array (handles names with spaces)
-                    local avds=()
+                    avds=()
                     while IFS= read -r avd_name; do
                         [ -n "$avd_name" ] && avds+=("$avd_name")
                     done < <(list_avds)
@@ -291,7 +296,7 @@ if [ "$MOBILE_CHOICE" = "1" ]; then
                         echo -e "${YELLOW}Продолжаем без выбора конкретного устройства${NC}"
                     elif [ ${#avds[@]} -eq 1 ]; then
                         # Only one AVD available
-                        local selected_avd="${avds[0]}"
+                        selected_avd="${avds[0]}"
                         echo -e "  ${GREEN}${selected_avd}${NC} (автоматически выбрано)"
                         echo ""
                         
@@ -302,7 +307,7 @@ if [ "$MOBILE_CHOICE" = "1" ]; then
                                 if [ $device_count -ge 1 ]; then
                                     # Find the emulator device
                                     for key in "${!DEVICES[@]}"; do
-                                        local dev_id="${DEVICES[$key]}"
+                                        dev_id="${DEVICES[$key]}"
                                         if [[ $dev_id == emulator-* ]]; then
                                             SELECTED_DEVICE="$dev_id"
                                             echo -e "${GREEN}Эмулятор обнаружен: ${SELECTED_DEVICE}${NC}"
@@ -319,7 +324,7 @@ if [ "$MOBILE_CHOICE" = "1" ]; then
                         fi
                     else
                         # Multiple AVDs - let user choose
-                        local i=1
+                        i=1
                         for avd in "${avds[@]}"; do
                             echo -e "  ${i}) ${GREEN}${avd}${NC}"
                             ((i++))
@@ -328,7 +333,7 @@ if [ "$MOBILE_CHOICE" = "1" ]; then
                         read -p "Выберите эмулятор [1-${#avds[@]}]: " AVD_CHOICE
                         
                         if [ -n "$AVD_CHOICE" ] && [ "$AVD_CHOICE" -ge 1 ] && [ "$AVD_CHOICE" -le ${#avds[@]} ]; then
-                            local selected_avd="${avds[$((AVD_CHOICE - 1))]}"
+                            selected_avd="${avds[$((AVD_CHOICE - 1))]}"
                             echo ""
                             
                             if start_emulator "$selected_avd"; then
@@ -338,7 +343,7 @@ if [ "$MOBILE_CHOICE" = "1" ]; then
                                     if [ $device_count -ge 1 ]; then
                                         # Find the emulator device
                                         for key in "${!DEVICES[@]}"; do
-                                            local dev_id="${DEVICES[$key]}"
+                                            dev_id="${DEVICES[$key]}"
                                             if [[ $dev_id == emulator-* ]]; then
                                                 SELECTED_DEVICE="$dev_id"
                                                 echo -e "${GREEN}Эмулятор обнаружен: ${SELECTED_DEVICE}${NC}"

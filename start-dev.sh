@@ -406,11 +406,21 @@ if [ "$RUN_ANDROID" = "yes" ]; then
     
     cd "$PROJECT_DIR/era_native"
     
-    # Build command with optional device ID
+    # Select correct Android variant (flavor) based on ACTIVE_GAME
+    # (we build 3 apps: base/vassals/artel)
+    ANDROID_MODE="baseDebug"
+    if [ "$ACTIVE_GAME" = "vassals-and-robbers" ]; then
+        ANDROID_MODE="vassalsDebug"
+    elif [ "$ACTIVE_GAME" = "artel" ]; then
+        ANDROID_MODE="artelDebug"
+    fi
+
+    # Build command with optional device selector
+    # NOTE: RN CLI renamed `--deviceId` -> `--device`
     if [ -n "$SELECTED_DEVICE" ]; then
-        BUILD_CMD="npx react-native run-android --deviceId=${SELECTED_DEVICE}"
+        BUILD_CMD="npx react-native run-android --device ${SELECTED_DEVICE} --mode ${ANDROID_MODE}"
     else
-        BUILD_CMD="npx react-native run-android"
+        BUILD_CMD="npx react-native run-android --mode ${ANDROID_MODE}"
     fi
     
     echo -e "${BLUE}Выполняется: ${BUILD_CMD}${NC}"
@@ -458,6 +468,8 @@ tmux send-keys -t $SESSION_NAME "export DEV_IP='${DEV_IP}'" C-m
 tmux send-keys -t $SESSION_NAME "export BACKEND_PORT='${BACKEND_PORT}'" C-m
 tmux send-keys -t $SESSION_NAME "export PORT='${BACKEND_PORT}'" C-m
 tmux send-keys -t $SESSION_NAME "export ACTIVE_GAME='${ACTIVE_GAME}'" C-m
+tmux send-keys -t $SESSION_NAME "export RAILS_ENV='development'" C-m
+tmux send-keys -t $SESSION_NAME "export RACK_ENV='development'" C-m
 tmux send-keys -t $SESSION_NAME "rails s -b ${DEV_IP} -p ${BACKEND_PORT}" C-m
 
 # Split window horizontally for frontend (bottom)

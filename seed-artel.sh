@@ -38,8 +38,8 @@ export ACTIVE_GAME="artel"
 
 echo -e "${GREEN}Загрузка сидов плагина Artel...${NC}\n"
 
-# Run the rake task to load all artel seeds
-if bundle exec rake artel:db:seed:all; then
+# Run the rake task to load all artel seeds (db:seed:artel из custom_seed.rake)
+if bundle exec rake db:seed:artel; then
     echo ""
     echo -e "${GREEN}✓ Сиды Artel успешно загружены!${NC}"
 else

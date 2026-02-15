@@ -41,8 +41,9 @@ fi
 echo -e "${YELLOW}Выберите версию игры для деплоя:${NC}"
 echo "  1) base-game"
 echo "  2) vassals-and-robbers"
+echo "  3) artel"
 echo ""
-read -p "Выбор [1-2]: " GAME_CHOICE
+read -p "Выбор [1-3]: " GAME_CHOICE
 
 case "$GAME_CHOICE" in
     1)
@@ -50,6 +51,9 @@ case "$GAME_CHOICE" in
         ;;
     2)
         GAME_VERSION="vassals-and-robbers"
+        ;;
+    3)
+        GAME_VERSION="artel"
         ;;
     *)
         echo -e "${RED}Неверный выбор. Используется base-game по умолчанию.${NC}"

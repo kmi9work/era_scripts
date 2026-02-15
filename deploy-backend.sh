@@ -1,6 +1,6 @@
 #!/bin/bash
 # deploy-backend.sh - Деплой бэкенда eraofchange на production сервер
-# Поддерживает обе версии: base-game и vassals-and-robbers
+# Поддерживает base-game, vassals-and-robbers и artel
 
 set -e
 

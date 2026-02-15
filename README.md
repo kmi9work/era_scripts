@@ -17,8 +17,10 @@
 
 ### Деплой
 
-- [`deploy-frontend.sh`](#6-deploy-frontendsh---деплой-фронтенда-на-production-сервер) - Деплой фронтенда на production
-- [`deploy-backend.sh`](#7-deploy-backendsh---деплой-бэкенда-на-production-сервер) - Деплой бэкенда на production
+- [`deploy-frontend.sh`](#7-deploy-frontendsh---деплой-фронтенда-на-production-сервер) - Деплой фронтенда на production (base-game / vassals-and-robbers / artel)
+- [`deploy-backend.sh`](#8-deploy-backendsh---деплой-бэкенда-на-production-сервер) - Деплой бэкенда на production (base-game / vassals-and-robbers / artel)
+- [`deploy-artel.sh`](deploy-artel.sh) - Деплой бэкенда с игрой Artel (без выбора версии)
+- [`seed-artel.sh`](seed-artel.sh) - Заливка сидов движка Artel (локально или на сервере)
 
 ### Разработка
 
@@ -31,7 +33,7 @@
 ```
 
 **Интерактивные опции:**
-1. Выбор игры (base-game или vassals-and-robbers)
+1. Выбор игры (base-game, vassals-and-robbers или artel)
 2. Запуск мобильного приложения (да/нет)
 3. Сборка на Android устройство (если выбран запуск мобильного)
 4. Выбор Android устройства (если их несколько)
@@ -74,7 +76,21 @@
 ./era_scripts/start-vassals-game.sh --skip-mobile
 ```
 
-### 4. `build-prod.sh` - Сборка продакшн версии era_native
+### 4. `start-artel-game.sh` - Быстрый запуск Artel
+
+Запускает систему с игрой Artel без интерактивных вопросов.
+
+```bash
+./era_scripts/start-artel-game.sh
+```
+
+**Опции:**
+```bash
+# Запустить без мобильного приложения
+./era_scripts/start-artel-game.sh --skip-mobile
+```
+
+### 5. `build-prod.sh` - Сборка продакшн версии era_native
 
 Собирает era_native приложение с продакшн-конфигурацией (подключение к https://epoha.igroteh.su/backend/ с Basic Auth).
 
@@ -93,7 +109,7 @@
 
 **Примечание:** После использования build-prod.sh для возврата к dev-режиму запустите `./era_scripts/start-dev.sh`
 
-### 5. `stop-dev.sh` - Остановка всех сервисов
+### 6. `stop-dev.sh` - Остановка всех сервисов
 
 Останавливает tmux сессию со всеми запущенными сервисами.
 
@@ -101,7 +117,7 @@
 ./era_scripts/stop-dev.sh
 ```
 
-### 6. `deploy-frontend.sh` - Деплой фронтенда на production сервер
+### 7. `deploy-frontend.sh` - Деплой фронтенда на production сервер
 
 Собирает фронтенд локально и загружает готовый `dist` на production сервер.
 
@@ -110,7 +126,7 @@
 ```
 
 **Что делает:**
-1. Интерактивный выбор версии игры (base-game или vassals-and-robbers)
+1. Интерактивный выбор версии игры (base-game, vassals-and-robbers или artel)
 2. Локальная сборка фронтенда с правильной настройкой `.env`
 3. Загрузка собранного `dist` на сервер через `rsync`
 4. Создание release директории и симлинка `current`
@@ -138,7 +154,7 @@ cap production frontend:deploy          # для base-game
 cap production frontend:deploy_vassals # для vassals-and-robbers
 ```
 
-### 7. `deploy-backend.sh` - Деплой бэкенда на production сервер
+### 8. `deploy-backend.sh` - Деплой бэкенда на production сервер
 
 Деплоит бэкенд (Rails приложение) на production сервер без использования Capistrano.
 
@@ -147,14 +163,14 @@ cap production frontend:deploy_vassals # для vassals-and-robbers
 ```
 
 **Что делает:**
-1. Интерактивный выбор версии игры (base-game или vassals-and-robbers)
+1. Интерактивный выбор версии игры (base-game, vassals-and-robbers или artel)
 2. Клонирование кода из репозитория на сервер (ветка `depl`)
 3. Установка зависимостей через Bundler
 4. Настройка конфигурационных файлов (database.yml, master.key, .env.production)
 5. Создание симлинков для shared файлов и директорий
 6. Остановка Passenger
 7. Выполнение миграций базы данных
-8. Запуск сидов (для vassals-and-robbers также запускаются специфичные сиды)
+8. Запуск сидов (для vassals-and-robbers и artel — специфичные сиды выполняются вручную при необходимости, см. seed-artel.sh)
 9. Обновление конфигурации Passenger (systemd)
 10. Переключение на новый релиз через симлинк `current`
 11. Запуск Passenger
@@ -189,7 +205,7 @@ cap production backend:deploy          # для base-game
 cap production backend:deploy_vassals   # для vassals-and-robbers
 ```
 
-### 8. `get-ip.sh` - Определение IP адреса
+### 9. `get-ip.sh` - Определение IP адреса
 
 Утилита для автоматического определения IP адреса системы.
 
@@ -253,12 +269,16 @@ tmux kill-session -t era-dev
 ```bash
 cd eraofchange
 ACTIVE_GAME=vassals-and-robbers rails server
+# или для Artel:
+ACTIVE_GAME=artel rails server
 ```
 
 **Frontend:**
 ```bash
 cd era_front
 VITE_ACTIVE_GAME=vassals-and-robbers pnpm dev
+# или для Artel:
+VITE_ACTIVE_GAME=artel pnpm dev
 ```
 
 **Mobile:**
@@ -292,6 +312,22 @@ npm run android
 # Выбрать: 2 (vassals-and-robbers)
 ```
 
+### Пример 2.1: Разработка Artel
+
+```bash
+# Быстрый запуск
+./era_scripts/start-artel-game.sh
+
+# Или интерактивно
+./era_scripts/start-dev.sh
+# Выбрать: 3 (artel)
+```
+
+Заливка сидов Artel (локально или на сервере):
+```bash
+./era_scripts/seed-artel.sh
+```
+
 ### Пример 3: Только backend и frontend (без mobile)
 
 ```bash
@@ -301,9 +337,12 @@ npm run android
 # Vassals game без mobile
 ./era_scripts/start-vassals-game.sh --skip-mobile
 
+# Artel без mobile
+./era_scripts/start-artel-game.sh --skip-mobile
+
 # Интерактивно
 ./era_scripts/start-dev.sh
-# Выбрать игру, затем выбрать: 2 (не запускать mobile)
+# Выбрать игру (1–3), затем выбрать: 2 (не запускать mobile)
 ```
 
 ### Пример 4: Запуск на конкретное Android устройство

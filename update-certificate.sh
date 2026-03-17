@@ -21,25 +21,39 @@ echo -e "${BLUE}=== SSL Certificate Update ===${NC}\n"
 # Configuration
 SERVER="${BACKEND_DEPLOY_SERVER:-62.173.148.168}"
 USER="deploy"
-DOMAIN="epoha.igroteh.su"
+DOMAINS=("epoha.igroteh.su" "calc.igroteh.su" "noble.igroteh.su")
 
-echo -e "${BLUE}=== Обновление SSL сертификата ===${NC}"
+echo -e "${BLUE}=== Обновление SSL сертификатов ===${NC}"
 echo -e "${YELLOW}Сервер: ${USER}@${SERVER}${NC}"
-echo -e "${YELLOW}Домен: ${DOMAIN}${NC}\n"
+echo -e "${YELLOW}Домены: ${DOMAINS[*]}${NC}\n"
 
-# Step 1: Update certificate on server
-echo -e "${BLUE}Шаг 1: Обновление сертификата на сервере...${NC}"
+# Step 1: Update certificates on server for all domains
+echo -e "${BLUE}Шаг 1: Обновление сертификатов на сервере...${NC}\n"
 
-ssh "${USER}@${SERVER}" "
-    echo 'Running certbot to update certificate...'
-    sudo certbot --nginx -d ${DOMAIN} || {
-        echo 'Error: Failed to update certificate'
+for DOMAIN in "${DOMAINS[@]}"; do
+    echo -e "${BLUE}Обработка домена: ${DOMAIN}${NC}"
+    
+    ssh "${USER}@${SERVER}" "
+        echo 'Running certbot to update certificate for ${DOMAIN}...'
+        sudo certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos --email admin@igroteh.su || {
+            echo 'Error: Failed to update certificate for ${DOMAIN}'
+            exit 1
+        }
+        
+        echo '✓ Certificate updated successfully for ${DOMAIN}'
+    "
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}✗ Ошибка при обновлении сертификата для ${DOMAIN}${NC}"
         exit 1
-    }
+    fi
     
-    echo '✓ Certificate updated successfully'
-    
-    # Reload nginx to apply changes
+    echo -e "${GREEN}✓ ${DOMAIN} обновлен${NC}\n"
+done
+
+# Reload nginx once after all certificates are updated
+echo -e "${BLUE}Перезагрузка nginx для применения всех изменений...${NC}"
+ssh "${USER}@${SERVER}" "
     echo 'Reloading nginx...'
     sudo systemctl reload nginx || {
         echo 'Warning: Failed to reload nginx, trying restart...'
@@ -53,18 +67,18 @@ ssh "${USER}@${SERVER}" "
 "
 
 if [ $? -ne 0 ]; then
-    echo -e "${RED}✗ Ошибка при обновлении сертификата${NC}"
+    echo -e "${RED}✗ Ошибка при перезагрузке nginx${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}✓ Сертификат обновлен успешно${NC}\n"
+echo -e "${GREEN}✓ Все сертификаты обновлены успешно${NC}\n"
 
-# Step 2: Verify certificate status
-echo -e "${BLUE}Шаг 2: Проверка статуса сертификата...${NC}"
+# Step 2: Verify certificate status for all domains
+echo -e "${BLUE}Шаг 2: Проверка статуса сертификатов...${NC}\n"
 
 ssh "${USER}@${SERVER}" "
-    echo 'Checking certificate expiration date...'
-    sudo certbot certificates | grep -A 5 '${DOMAIN}' || {
+    echo 'Checking certificate expiration dates...'
+    sudo certbot certificates | grep -E '(${DOMAINS[0]}|${DOMAINS[1]}|${DOMAINS[2]})' || {
         echo 'Warning: Could not find certificate info'
     }
     
@@ -74,8 +88,11 @@ ssh "${USER}@${SERVER}" "
 "
 
 echo ""
-echo -e "${GREEN}=== Обновление сертификата завершено успешно ===${NC}"
-echo -e "${BLUE}Домен: ${DOMAIN}${NC}"
+echo -e "${GREEN}=== Обновление сертификатов завершено успешно ===${NC}"
+echo -e "${BLUE}Обновленные домены:${NC}"
+for DOMAIN in "${DOMAINS[@]}"; do
+    echo -e "  - ${DOMAIN}"
+done
 echo ""
 
 

@@ -304,3 +304,107 @@ echo -e "${BLUE}Версия игры: ${GAME_VERSION}${NC}"
 echo -e "${BLUE}Путь на сервере: ${CURRENT_DIR}${NC}"
 echo ""
 
+# Step 12: Production environment database reset (optional)
+echo -e "${BLUE}=== Шаг 12: Сброс и миграция БД для production ===${NC}"
+
+read -p "Выполнить сброс и миграцию БД для production? (db:drop && db:create && db:migrate) [y/N]: " PROD_RESET
+if [[ "$PROD_RESET" =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Выполняется сброс и миграция БД для production...${NC}\n"
+    
+    # Stop Passenger first to release database connections
+    echo -e "${BLUE}Остановка Passenger для освобождения подключений к БД...${NC}"
+    ssh "${USER}@${SERVER}" "sudo systemctl stop passenger"
+    echo -e "${GREEN}✓ Passenger остановлен${NC}\n"
+    
+    ssh "${USER}@${SERVER}" "
+        cd ${CURRENT_DIR}
+        
+        # Setup rbenv environment
+        export RBENV_ROOT=\$HOME/.rbenv
+        export PATH=\"\$RBENV_ROOT/bin:\$PATH\"
+        eval \"\$(rbenv init - bash)\"
+        rbenv local ${RBENV_RUBY}
+        
+        # Command 1: db:drop
+        echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:drop'
+        RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:drop || {
+            echo 'Error: Failed to drop database'
+            exit 1
+        }
+        
+        # Command 2: db:create
+        echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:create'
+        RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:create || {
+            echo 'Error: Failed to create database'
+            exit 1
+        }
+        
+        # Command 3: db:migrate
+        echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:migrate'
+        RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:migrate || {
+            echo 'Error: Failed to run migrations'
+            exit 1
+        }
+        
+        echo '✓ Production БД успешно сброшена и миграции выполнены'
+    "
+    
+    # Restart Passenger after database operations
+    echo -e "${BLUE}Запуск Passenger...${NC}"
+    ssh "${USER}@${SERVER}" "sudo systemctl start passenger || true"
+    echo -e "${GREEN}✓ Passenger запущен${NC}\n"
+    
+    echo -e "${GREEN}✓ Production БД успешно сброшена и миграции выполнены${NC}\n"
+else
+    echo -e "${YELLOW}Сброс БД пропущен${NC}\n"
+fi
+
+# Step 13: Load seeds for production (optional)
+echo -e "${BLUE}=== Шаг 13: Загрузка сидов для production ===${NC}"
+
+read -p "Загрузить сиды для production (${GAME_VERSION})? [y/N]: " LOAD_SEEDS
+if [[ "$LOAD_SEEDS" =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Загрузка сидов для production (${GAME_VERSION})...${NC}\n"
+    
+    ssh "${USER}@${SERVER}" "
+        cd ${CURRENT_DIR}
+        
+        # Setup rbenv environment
+        export RBENV_ROOT=\$HOME/.rbenv
+        export PATH=\"\$RBENV_ROOT/bin:\$PATH\"
+        eval \"\$(rbenv init - bash)\"
+        rbenv local ${RBENV_RUBY}
+
+        # Command: db:seed:all
+        echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all'
+        RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all || {
+            echo 'Error: Failed to run seeds'
+            exit 1
+        }
+        
+        # Determine which seeds to run based on GAME_VERSION
+        if [ \"${GAME_VERSION}\" = \"artel\" ]; then
+            # Command: db:seed:artel
+            echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:artel'
+            RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:artel || {
+                echo 'Error: Failed to run artel seeds'
+                exit 1
+            }
+        elif [ \"${GAME_VERSION}\" = \"vassals-and-robbers\" ]; then
+            # Command: db:seed:vassals
+            echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:vassals'
+            RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:vassals || {
+                echo 'Error: Failed to run vassals seeds'
+                exit 1
+            }
+        fi
+        
+        echo '✓ Сиды успешно загружены в production'
+    "
+    
+    echo -e "${GREEN}✓ Сиды загружены в production${NC}\n"
+else
+    echo -e "${YELLOW}Загрузка сидов пропущена${NC}\n"
+fi
+
+

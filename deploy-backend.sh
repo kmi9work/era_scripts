@@ -17,6 +17,34 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Parse optional command-line arguments for automated answers
+# Usage: ./deploy-backend.sh [GAME_CHOICE] [PROD_RESET] [LOAD_SEEDS]
+# Examples:
+#   ./deploy-backend.sh 2yy        # Concatenated: game=2, reset=y, seeds=y
+#   ./deploy-backend.sh 2 y y      # Separate: game=2, reset=y, seeds=y
+#   ./deploy-backend.sh 3 n y      # game=3 (artel), reset=no, seeds=yes
+# If no arguments provided, script prompts interactively as usual
+
+ANSWER_GAME=""
+ANSWER_RESET=""
+ANSWER_SEEDS=""
+
+if [ $# -gt 0 ]; then
+    ARG1="$1"
+    # If only one argument provided, treat as concatenated string (e.g., "2yy")
+    if [ $# -eq 1 ] && [ ${#ARG1} -ge 3 ]; then
+        ANSWER_GAME="${ARG1:0:1}"
+        ANSWER_RESET="${ARG1:1:1}"
+        ANSWER_SEEDS="${ARG1:2:1}"
+    else
+        # Separate arguments
+        ANSWER_GAME="$1"
+        ANSWER_RESET="$2"
+        ANSWER_SEEDS="$3"
+    fi
+    echo -e "${YELLOW}Automated mode: GAME=$ANSWER_GAME, RESET=$ANSWER_RESET, SEEDS=$ANSWER_SEEDS${NC}\n"
+fi
+
 echo -e "${BLUE}=== ERA Backend Deployment ===${NC}\n"
 
 # Configuration
@@ -29,13 +57,17 @@ RBENV_RUBY="3.2.2"
 PASSENGER_RUBY="/home/deploy/.rbenv/shims/ruby"
 KEEP_RELEASES=3
 
-# Ask user to choose game version
-echo -e "${YELLOW}Выберите версию игры для деплоя:${NC}"
-echo "  1) base-game"
-echo "  2) vassals-and-robbers"
-echo "  3) artel"
-echo ""
-read -p "Выбор [1-3]: " GAME_CHOICE
+# Ask user to choose game version (or use argument if provided)
+if [ -n "$ANSWER_GAME" ]; then
+    GAME_CHOICE="$ANSWER_GAME"
+else
+    echo -e "${YELLOW}Выберите версию игры для деплоя:${NC}"
+    echo "  1) base-game"
+    echo "  2) vassals-and-robbers"
+    echo "  3) artel"
+    echo ""
+    read -p "Выбор [1-3]: " GAME_CHOICE
+fi
 
 case "$GAME_CHOICE" in
     1)

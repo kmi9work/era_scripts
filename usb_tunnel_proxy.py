@@ -60,37 +60,67 @@ class USBHTTPTunnel:
         if dev is None:
             return False
 
-        for intf_num in [0, 1]:
-            try:
-                if dev.is_kernel_driver_active(intf_num):
-                    dev.detach_kernel_driver(intf_num)
-            except Exception:
-                pass
+        # Reset the device to clear any stuck interface state from
+        # previous interrupted sessions (claim without release).
+        try:
+            dev.reset()
+            time.sleep(0.5)
+        except Exception:
+            pass
 
-        dev.set_configuration()
+        try:
+            dev.set_configuration()
+        except usb_core.USBError as e:
+            if e.errno != 16:  # Ignore "Resource busy" — already configured
+                raise
+
         self.cfg = dev.get_active_configuration()
         self.dev = dev
+
         return True
 
     def _setup_tunnel(self):
-        """Set Interface 1 to AltSetting 1 (Bulk endpoints)."""
-        try:
-            usb_util.release_interface(self.dev, 1)
-        except Exception:
-            pass
-        try:
-            if self.dev.is_kernel_driver_active(1):
-                self.dev.detach_kernel_driver(1)
-        except Exception:
-            pass
+        """Set Interface 1 to AltSetting 1 (Bulk endpoints).
 
-        self.dev.set_interface_altsetting(interface=1, alternate_setting=1)
+        Must be called once after connect() and kept open for the lifetime
+        of the tunnel — do NOT release/re-claim between requests.
+
+        We use a direct libusb detach+claim sequence here rather than
+        pyusb's wrappers to avoid issues with the auto-detach kernel driver
+        flag not propagating reliably through all pyusb backend paths.
+        """
+        import ctypes
+
+        _libusb = ctypes.CDLL('libusb-1.0.so.0')
+        _libusb.libusb_detach_kernel_driver.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        _libusb.libusb_detach_kernel_driver.restype = ctypes.c_int
+        _libusb.libusb_claim_interface.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        _libusb.libusb_claim_interface.restype = ctypes.c_int
+        _libusb.libusb_set_interface_alt_setting.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int
+        ]
+        _libusb.libusb_set_interface_alt_setting.restype = ctypes.c_int
+
+        handle = self.dev._ctx.handle.handle
+
+        # Detach kernel driver if bound (ignore errors if not bound)
+        _libusb.libusb_detach_kernel_driver(handle, 1)
+
+        # Claim interface and set alt setting
+        ret = _libusb.libusb_claim_interface(handle, 1)
+        if ret != 0:
+            raise RuntimeError(
+                f"Failed to claim USB management interface (1): "
+                f"libusb error {ret}. Is another program using it?"
+            )
+
+        ret = _libusb.libusb_set_interface_alt_setting(handle, 1, 1)
+        if ret != 0:
+            raise RuntimeError(
+                f"Failed to set interface alt setting: libusb error {ret}"
+            )
+
         time.sleep(0.1)
-
-        try:
-            usb_util.claim_interface(self.dev, 1)
-        except Exception:
-            pass
 
         intf1 = self.cfg[(1, 1)]
         for ep in intf1:
@@ -99,12 +129,12 @@ class USBHTTPTunnel:
             else:
                 self.ep_out = ep
 
-    def _release_tunnel(self):
-        """Release Interface 1."""
-        try:
-            usb_util.release_interface(self.dev, 1)
-        except Exception:
-            pass
+        intf1 = self.cfg[(1, 1)]
+        for ep in intf1:
+            if ep.bEndpointAddress & 0x80:
+                self.ep_in = ep
+            else:
+                self.ep_out = ep
 
     def request(self, method: str, path: str, headers: dict = None,
                 body: bytes = b"") -> tuple:
@@ -117,8 +147,6 @@ class USBHTTPTunnel:
             headers = {}
 
         with self._lock:
-            self._setup_tunnel()
-
             # Build HTTP request
             req_line = f"{method} {path} HTTP/1.1\r\n"
             req = req_line.encode()
@@ -144,8 +172,7 @@ class USBHTTPTunnel:
             # Send
             try:
                 self.ep_out.write(req, timeout=10000)
-            except Exception as e:
-                self._release_tunnel()
+            except Exception:
                 return (0, {}, b"")
 
             # Read response
@@ -158,8 +185,6 @@ class USBHTTPTunnel:
                 except Exception:
                     if len(all_data) > 0:
                         break
-
-            self._release_tunnel()
 
             # Parse response
             resp = bytes(all_data)
@@ -214,16 +239,20 @@ class USBHTTPTunnel:
     def close(self):
         """Close USB connection."""
         if self.dev:
-            try:
-                usb_util.release_interface(self.dev, 1)
-            except Exception:
-                pass
+            import ctypes
+            _libusb = ctypes.CDLL('libusb-1.0.so.0')
+            _libusb.libusb_release_interface.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            _libusb.libusb_release_interface.restype = ctypes.c_int
+            _libusb.libusb_attach_kernel_driver.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            _libusb.libusb_attach_kernel_driver.restype = ctypes.c_int
+            handle = self.dev._ctx.handle.handle
+
+            # Release Interface 1 first, then re-attach kernel driver
+            _libusb.libusb_release_interface(handle, 1)
+            _libusb.libusb_attach_kernel_driver(handle, 1)
+
             try:
                 usb_util.release_interface(self.dev, 0)
-            except Exception:
-                pass
-            try:
-                self.dev.attach_kernel_driver(1)
             except Exception:
                 pass
             try:
@@ -322,6 +351,13 @@ def main():
 
     print(f"  ✅ USB connected: {tunnel.dev.product} "
           f"(S/N: {tunnel.dev.serial_number})")
+
+    # Set up the management tunnel (Interface 1, AltSetting 1) once.
+    # Keeping the tunnel open continuously avoids endpoint invalidation
+    # that would occur if we claimed/released it per-request.
+    print("  🔧 Setting up management tunnel...")
+    tunnel._setup_tunnel()
+    print("  ✅ USB management tunnel established")
 
     # Auto-login if password provided
     if args.password:

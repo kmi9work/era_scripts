@@ -138,6 +138,21 @@ if [ -f "dist/logo.png" ]; then
     cp "dist/logo.png" "${MOBILE_DEPLOY_DIR}/"
 fi
 
+# PWA-файлы (манифест, service worker, иконки) — без них calc.igroteh.su
+# не сможет предложить установку приложения на экран
+if [ -f "dist/manifest.webmanifest" ]; then
+    cp "dist/manifest.webmanifest" "${MOBILE_DEPLOY_DIR}/"
+fi
+if [ -f "dist/sw.js" ]; then
+    cp "dist/sw.js" "${MOBILE_DEPLOY_DIR}/"
+fi
+if [ -f "dist/pwa-192x192.png" ]; then
+    cp "dist/pwa-192x192.png" "${MOBILE_DEPLOY_DIR}/"
+fi
+if [ -f "dist/pwa-512x512.png" ]; then
+    cp "dist/pwa-512x512.png" "${MOBILE_DEPLOY_DIR}/"
+fi
+
 echo -e "${GREEN}✓ Mobile helper собран и подготовлен${NC}\n"
 
 # Step 2.5: Build noble helper with separate proxy URL

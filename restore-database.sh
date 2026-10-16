@@ -112,13 +112,13 @@ ssh "${USER}@${SERVER}" "
   echo '✓ Database password loaded from local config/database.key'
 
   echo 'Dropping and recreating database...'
-  psql -v ON_ERROR_STOP=1 -U ${DB_USER} -h localhost -d postgres \
+  psql -v ON_ERROR_STOP=1 -U ${DB_USER} -d postgres \
     -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB_NAME}' AND pid <> pg_backend_pid();\" \
     -c \"DROP DATABASE IF EXISTS ${DB_NAME};\" \
     -c \"CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};\"
 
   echo 'Running restore via psql...'
-  psql -v ON_ERROR_STOP=1 -U ${DB_USER} -h localhost -d ${DB_NAME} -f ${REMOTE_SQL_PATH} || {
+  psql -v ON_ERROR_STOP=1 -U ${DB_USER} -d ${DB_NAME} -f ${REMOTE_SQL_PATH} || {
     echo 'Error: Restore failed'
     exit 1
   }

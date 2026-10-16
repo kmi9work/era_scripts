@@ -18,16 +18,20 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Parse optional command-line arguments for automated answers
-# Usage: ./deploy-backend.sh [GAME_CHOICE] [PROD_RESET] [LOAD_SEEDS]
+# Usage: ./deploy-backend.sh [GAME_CHOICE] [PROD_RESET] [LOAD_SEEDS] [SCHEDULE_PRESET]
 # Examples:
 #   ./deploy-backend.sh 2yy        # Concatenated: game=2, reset=y, seeds=y
 #   ./deploy-backend.sh 2 y y      # Separate: game=2, reset=y, seeds=y
 #   ./deploy-backend.sh 3 n y      # game=3 (artel), reset=no, seeds=yes
+#   ./deploy-backend.sh 2 y y igra_mart   # + пресет расписания igra_mart
+# Пресет расписания также можно задать переменной окружения SCHEDULE_PRESET=<slug>.
+# Синхронизацию пресетов можно пропустить: SKIP_PRESETS_SYNC=1
 # If no arguments provided, script prompts interactively as usual
 
 ANSWER_GAME=""
 ANSWER_RESET=""
 ANSWER_SEEDS=""
+ANSWER_PRESET="${SCHEDULE_PRESET:-}"
 
 if [ $# -gt 0 ]; then
     ARG1="$1"
@@ -41,8 +45,9 @@ if [ $# -gt 0 ]; then
         ANSWER_GAME="$1"
         ANSWER_RESET="$2"
         ANSWER_SEEDS="$3"
+        [ $# -ge 4 ] && ANSWER_PRESET="$4"
     fi
-    echo -e "${YELLOW}Automated mode: GAME=$ANSWER_GAME, RESET=$ANSWER_RESET, SEEDS=$ANSWER_SEEDS${NC}\n"
+    echo -e "${YELLOW}Automated mode: GAME=$ANSWER_GAME, RESET=$ANSWER_RESET, SEEDS=$ANSWER_SEEDS, PRESET=${ANSWER_PRESET:-<нет>}${NC}\n"
 fi
 
 echo -e "${BLUE}=== ERA Backend Deployment ===${NC}\n"
@@ -339,7 +344,12 @@ echo ""
 # Step 12: Production environment database reset (optional)
 echo -e "${BLUE}=== Шаг 12: Сброс и миграция БД для production ===${NC}"
 
-read -p "Выполнить сброс и миграцию БД для production? (db:drop && db:create && db:migrate) [y/N]: " PROD_RESET
+if [ -n "$ANSWER_RESET" ]; then
+    PROD_RESET="$ANSWER_RESET"
+    echo -e "${YELLOW}Сброс БД: $PROD_RESET (из аргументов)${NC}\n"
+else
+    read -p "Выполнить сброс и миграцию БД для production? (db:drop && db:create && db:migrate) [y/N]: " PROD_RESET
+fi
 if [[ "$PROD_RESET" =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Выполняется сброс и миграция БД для production...${NC}\n"
     
@@ -391,12 +401,55 @@ else
     echo -e "${YELLOW}Сброс БД пропущен${NC}\n"
 fi
 
-# Step 13: Load seeds for production (optional)
-echo -e "${BLUE}=== Шаг 13: Загрузка сидов для production ===${NC}"
+# Step 13: Синхронизация пресетов расписания (двусторонняя, с локальной машиной)
+echo -e "${BLUE}=== Шаг 13: Синхронизация пресетов расписания ===${NC}"
 
-read -p "Загрузить сиды для production (${GAME_VERSION})? [y/N]: " LOAD_SEEDS
+PRESETS_LOCAL_DIR="$PROJECT_DIR/eraofchange/storage/schedule_presets"
+if [ "${SKIP_PRESETS_SYNC:-0}" = "1" ]; then
+    echo -e "${YELLOW}Синхронизация пресетов пропущена (SKIP_PRESETS_SYNC=1)${NC}\n"
+else
+    "${SCRIPTS_DIR}/sync-schedule-presets.sh" || {
+        echo -e "${YELLOW}Предупреждение: синхронизация пресетов завершилась с ошибкой${NC}\n"
+    }
+fi
+
+# Список доступных пресетов (после синхронизации локальная копия = сервер)
+if [ -d "$PRESETS_LOCAL_DIR" ]; then
+    PRESET_SLUGS="$(cd "$PRESETS_LOCAL_DIR" && ls -1 *.json 2>/dev/null | sed 's/\.json$//' | paste -sd', ' - || true)"
+    if [ -n "$PRESET_SLUGS" ]; then
+        echo -e "${BLUE}Доступные пресеты расписания:${NC} ${PRESET_SLUGS}"
+    else
+        echo -e "${YELLOW}Сохранённых пресетов расписания нет (будет использовано встроенное расписание)${NC}"
+    fi
+fi
+
+# Выбор пресета для сидирования: аргумент/ENV, иначе спросить
+if [ -z "$ANSWER_PRESET" ] && [ -t 0 ]; then
+    read -p "Какой пресет расписания применить при сидировании? (slug, Enter = встроенное): " ANSWER_PRESET
+fi
+if [ -n "$ANSWER_PRESET" ]; then
+    echo -e "${GREEN}Пресет расписания для сидов: ${ANSWER_PRESET}${NC}\n"
+else
+    echo -e "${YELLOW}Пресет не выбран — при сидировании будет использовано встроенное расписание${NC}\n"
+fi
+
+# Step 14: Load seeds for production (optional)
+echo -e "${BLUE}=== Шаг 14: Загрузка сидов для production ===${NC}"
+
+if [ -n "$ANSWER_SEEDS" ]; then
+    LOAD_SEEDS="$ANSWER_SEEDS"
+    echo -e "${YELLOW}Загрузка сидов: $LOAD_SEEDS (из аргументов)${NC}\n"
+else
+    read -p "Загрузить сиды для production (${GAME_VERSION})? [y/N]: " LOAD_SEEDS
+fi
 if [[ "$LOAD_SEEDS" =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Загрузка сидов для production (${GAME_VERSION})...${NC}\n"
+
+    # Пресет расписания для db:seed:all (SCHEDULE_PRESET читает модель GameParameter)
+    PRESET_ENV=""
+    if [ -n "$ANSWER_PRESET" ]; then
+        PRESET_ENV="SCHEDULE_PRESET=${ANSWER_PRESET}"
+    fi
     
     ssh "${USER}@${SERVER}" "
         cd ${CURRENT_DIR}
@@ -408,8 +461,8 @@ if [[ "$LOAD_SEEDS" =~ ^[Yy]$ ]]; then
         rbenv local ${RBENV_RUBY}
 
         # Command: db:seed:all
-        echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all'
-        RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all || {
+        echo '>>> Command: ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all'
+        ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all || {
             echo 'Error: Failed to run seeds'
             exit 1
         }
@@ -417,15 +470,15 @@ if [[ "$LOAD_SEEDS" =~ ^[Yy]$ ]]; then
         # Determine which seeds to run based on GAME_VERSION
         if [ \"${GAME_VERSION}\" = \"artel\" ]; then
             # Command: db:seed:artel
-            echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:artel'
-            RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:artel || {
+            echo '>>> Command: ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:artel'
+            ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:artel || {
                 echo 'Error: Failed to run artel seeds'
                 exit 1
             }
         elif [ \"${GAME_VERSION}\" = \"vassals-and-robbers\" ]; then
             # Command: db:seed:vassals
-            echo '>>> Command: RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:vassals'
-            RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:vassals || {
+            echo '>>> Command: ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:vassals'
+            ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:vassals || {
                 echo 'Error: Failed to run vassals seeds'
                 exit 1
             }

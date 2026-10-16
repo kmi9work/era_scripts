@@ -73,7 +73,7 @@ ssh "${USER}@${SERVER}" "
     
     # Create SQL dump
     echo 'Creating SQL dump...'
-    pg_dump -U ${DB_USER} -h localhost -d ${DB_NAME} -F p -f ${REMOTE_DUMP_PATH} || {
+    pg_dump -U ${DB_USER} -d ${DB_NAME} -F p -f ${REMOTE_DUMP_PATH} || {
         echo 'Error: Failed to create database dump'
         exit 1
     }

@@ -1,6 +1,7 @@
 #!/bin/bash
 # deploy-frontend.sh - Деплой фронтенда era_front на production сервер
 # Сборка происходит локально, на сервер загружается готовый dist
+# Игры не захардкожены: список плагинов берётся из era_front/src/plugins/game-plugins
 
 set -e
 
@@ -10,14 +11,17 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# Реестр игр: движки eraofchange/engines/* + плагины клиентов
+# shellcheck source=lib/era-games.sh
+source "$SCRIPTS_DIR/lib/era-games.sh"
+era_build_registry
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
-
-echo -e "${BLUE}=== ERA Frontend Deployment ===${NC}\n"
 
 # Configuration
 FRONTEND_DIR="$PROJECT_DIR/era_front"
@@ -37,32 +41,108 @@ if [ ! -d "$FRONTEND_DIR" ]; then
     exit 1
 fi
 
-# Ask user to choose game version
-echo -e "${YELLOW}Выберите версию игры для деплоя:${NC}"
-echo "  1) base-game"
-echo "  2) vassals-and-robbers"
-echo "  3) artel"
-echo ""
-read -p "Выбор [1-3]: " GAME_CHOICE
+# Parse optional command-line arguments
+# Usage: ./deploy-frontend.sh [--game=<ключ|номер>] [--plugin=<имя плагина>] [--list]
+#   ./deploy-frontend.sh                        # интерактивный выбор игры
+#   ./deploy-frontend.sh --game=many-teams      # сразу нужная игра/плагин
+#   ./deploy-frontend.sh --list                 # все движки и плагины
+ANSWER_GAME=""
+LIST_GAMES=0
 
-case "$GAME_CHOICE" in
-    1)
-        GAME_VERSION="base-game"
-        ;;
-    2)
-        GAME_VERSION="vassals-and-robbers"
-        ;;
-    3)
-        GAME_VERSION="artel"
-        ;;
-    *)
-        echo -e "${RED}Неверный выбор. Используется base-game по умолчанию.${NC}"
-        GAME_VERSION="base-game"
-        ;;
-esac
+usage() {
+    cat <<'USAGE'
+Usage: deploy-frontend.sh [--game=<ключ|номер>] [--plugin=<имя плагина>] [--list]
+
+  Без аргументов — интерактивный выбор игры.
+  --game    ключ игры (many-teams) или номер из меню
+  --plugin  имя каталога плагина в era_front/src/plugins/game-plugins
+  --list    показать все найденные движки, плагины и игры
+
+Примеры:
+  deploy-frontend.sh
+  deploy-frontend.sh --game=many-teams
+  deploy-frontend.sh --plugin=many_teams
+USAGE
+}
+
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --list)      LIST_GAMES=1; shift ;;
+        --game=*)    ANSWER_GAME="${1#*=}"; shift ;;
+        --plugin=*)  ANSWER_GAME="${1#*=}"; shift ;;
+        --engine=*)  ANSWER_GAME="${1#*=}"; shift ;;
+        --game|--plugin|--engine)
+                     ANSWER_GAME="${2:-}"; shift 2 ;;
+        -h|--help)   usage; exit 0 ;;
+        --)          shift; POSITIONAL+=("$@"); break ;;
+        -*)          echo "Неизвестный флаг: $1"; usage; exit 1 ;;
+        *)           POSITIONAL+=("$1"); shift ;;
+    esac
+done
+if [ ${#POSITIONAL[@]} -gt 0 ]; then
+    set -- "${POSITIONAL[@]}"
+else
+    set --
+fi
+
+if [ "$LIST_GAMES" = "1" ]; then
+    era_report
+    exit 0
+fi
+
+echo -e "${BLUE}=== ERA Frontend Deployment ===${NC}\n"
+
+# Ask user to choose game version (or use argument if provided)
+if [ -n "$ANSWER_GAME" ]; then
+    if ! era_resolve_game "$ANSWER_GAME"; then
+        echo -e "${RED}Неизвестная игра: ${ANSWER_GAME}${NC}"
+        echo ""
+        era_list_games
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}Выберите игру для деплоя:${NC}"
+    era_list_games
+    echo ""
+    read -p "Выбор [1-${#ERA_GAME_KEYS[@]}]: " GAME_CHOICE
+    if ! era_resolve_game "$GAME_CHOICE"; then
+        echo -e "${RED}Неверный выбор игры.${NC}"
+        exit 1
+    fi
+fi
+
+GAME_VERSION="$ERA_GAME_KEY"
 
 echo ""
-echo -e "${GREEN}Выбрана версия: ${GAME_VERSION}${NC}\n"
+echo -e "${GREEN}Выбрана игра: ${GAME_VERSION}${NC}"
+
+# Плагин игры в era_front: сборка идёт из локального дерева, поэтому плагин
+# обязан лежать в рабочей копии. Если он есть в другой ветке — это ошибка
+# (соберётся ядро вместо игры), если его нет нигде — предупреждение (artel и т. п.).
+PLUGIN_DIR="$(era_plugin_dir "$FRONTEND_DIR" "$GAME_VERSION" || true)"
+if [ -n "$PLUGIN_DIR" ]; then
+    echo -e "${GREEN}Плагин era_front: ${PLUGIN_DIR}${NC}\n"
+elif [ "$GAME_VERSION" = "base-game" ]; then
+    echo -e "${BLUE}Плагин не нужен: базовая игра${NC}\n"
+else
+    PLUGIN_BRANCH=""
+    for CANDIDATE in "$GAME_VERSION" "${GAME_VERSION//-/_}"; do
+        HEAD_BRANCH="$(git -C "$FRONTEND_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo master)"
+        if FOUND="$(era_branch_for_path "$FRONTEND_DIR" "src/plugins/game-plugins/$CANDIDATE" "$HEAD_BRANCH" 2>/dev/null)"; then
+            if era_branch_has_path "$FRONTEND_DIR" "$FOUND" "src/plugins/game-plugins/$CANDIDATE"; then
+                PLUGIN_BRANCH="$FOUND"
+                break
+            fi
+        fi
+    done
+    if [ -n "$PLUGIN_BRANCH" ]; then
+        echo -e "${RED}Плагина игры ${GAME_VERSION} нет в рабочей копии era_front, но он есть в ветке ${PLUGIN_BRANCH}.${NC}"
+        echo -e "${YELLOW}Переключите era_front на эту ветку (или выберите другую игру) и повторите деплой.${NC}"
+        exit 1
+    fi
+    echo -e "${YELLOW}Плагина игры ${GAME_VERSION} нет в era_front ни в одной ветке — фронт соберётся на ядре.${NC}\n"
+fi
 
 # Step 1: Install dependencies
 echo -e "${BLUE}=== Шаг 1: Установка зависимостей ===${NC}"
@@ -283,6 +363,10 @@ ssh "${USER}@${SERVER}" "
     rm -rf ${DEPLOY_PATH}/current
     # Создаем новый симлинк
     ln -sfn ${RELEASE_DIR} ${DEPLOY_PATH}/current
+    # APK для планшетов лежат ВНЕ релизов (загружает era_scripts/build-prod.sh),
+    # внутри релиза держим только симлинк на каталог загрузок, иначе файлы пропадут при деплое
+    mkdir -p ${DEPLOY_PATH}/downloads
+    ln -sfn ../../downloads ${RELEASE_DIR}/apk
 "
 
 echo -e "${GREEN}✓ Симлинк создан${NC}\n"
@@ -385,6 +469,7 @@ echo ""
 echo -e "${GREEN}=== Деплой завершен успешно ===${NC}"
 echo -e "${BLUE}Release: ${TIMESTAMP}${NC}"
 echo -e "${BLUE}Версия игры: ${GAME_VERSION}${NC}"
+echo -e "${BLUE}Плагин era_front: ${PLUGIN_DIR:-<ядро>}${NC}"
 echo -e "${BLUE}Основное приложение: ${DEPLOY_PATH}/current${NC}"
 echo -e "${BLUE}Mobile helper: ${MOBILE_DEPLOY_PATH}/current${NC}"
 echo -e "${BLUE}Noble helper: ${NOBLE_DEPLOY_PATH}/current${NC}"

@@ -141,3 +141,36 @@ sudo nginx -t && sudo systemctl reload nginx
 
 Откройте в браузере `https://epoha.igroteh.su/` - должна открыться главная страница фронтенда.
 
+## Раздача APK (`/apk/`)
+
+APK для планшетов лежат в `/opt/era/era_front/downloads` (их загружает `build-prod.sh`), а внутри
+текущего релиза на каталог указывает симлинк `apk -> ../../downloads`, который пересоздаёт
+`deploy-frontend.sh`. Это работает без правки nginx, но у `location /` есть SPA-заглушка
+(`try_files $uri $uri/ /index.html`): на несуществующий `/apk/era-vassals.apk` сервер отвечает
+`200 text/html` вместо `404`. Браузер в этом случае скачает HTML-файл с именем `.apk`.
+
+Чтобы отсутствующий файл давал честный 404 и правильный MIME-тип, добавьте в `server`-блок
+`epoha.igroteh.su` (после `location /backend`) отдельную локацию:
+
+```nginx
+    # APK для планшетов: файлы вне релизов фронта
+    location ^~ /apk/ {
+        alias /opt/era/era_front/downloads/;
+        types { application/vnd.android.package-archive apk; }
+    }
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Проверка (Basic Auth сайта сохраняется — она задана на уровне всего `server`):
+
+```bash
+curl -u Anton:<пароль> -I https://epoha.igroteh.su/apk/era-base.apk        # 200, content-type: application/vnd.android.package-archive
+curl -u Anton:<пароль> -I https://epoha.igroteh.su/apk/era-vassals.apk    # 404, если версия не загружена
+```
+
+Приложение era_front не зависит от этой правки: перед показом ссылки оно делает HEAD-запрос и
+помечает пункт «не опубликовано», если по ссылке отдаётся HTML.
+

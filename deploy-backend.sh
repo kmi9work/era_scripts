@@ -1,6 +1,8 @@
 #!/bin/bash
 # deploy-backend.sh - Деплой бэкенда eraofchange на production сервер
-# Поддерживает base-game, vassals-and-robbers и artel
+#
+# Игры не захардкожены: список движков и плагинов собирается из репозиториев
+# (lib/era-games.sh). Доступна любая игра из eraofchange/engines/*.
 
 set -e
 
@@ -9,6 +11,11 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Get the project root directory (one level up)
 PROJECT_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
+
+# Реестр игр: движки eraofchange/engines/* + плагины клиентов
+# shellcheck source=lib/era-games.sh
+source "$SCRIPTS_DIR/lib/era-games.sh"
+era_build_registry
 
 # Colors for output
 RED='\033[0;31m'
@@ -19,21 +26,87 @@ NC='\033[0m' # No Color
 
 # Parse optional command-line arguments for automated answers
 # Usage: ./deploy-backend.sh [GAME_CHOICE] [PROD_RESET] [LOAD_SEEDS] [SCHEDULE_PRESET]
+#        ./deploy-backend.sh --game=<ключ|номер> [--branch=<ветка>] [RESET SEEDS PRESET]
 # Examples:
 #   ./deploy-backend.sh 2yy        # Concatenated: game=2, reset=y, seeds=y
 #   ./deploy-backend.sh 2 y y      # Separate: game=2, reset=y, seeds=y
 #   ./deploy-backend.sh 3 n y      # game=3 (artel), reset=no, seeds=yes
 #   ./deploy-backend.sh 2 y y igra_mart   # + пресет расписания igra_mart
+#   ./deploy-backend.sh --game=many-teams y y   # любая игра из реестра (см. --list)
+#   ./deploy-backend.sh --list     # показать все найденные движки/плагины и игры
 # Пресет расписания также можно задать переменной окружения SCHEDULE_PRESET=<slug>.
 # Синхронизацию пресетов можно пропустить: SKIP_PRESETS_SYNC=1
+# Ветка деплоя: BACKEND_BRANCH=<ветка> (по умолчанию depl; если движка в ветке нет,
+# берётся первая локальная ветка, где он есть).
 # If no arguments provided, script prompts interactively as usual
 
 ANSWER_GAME=""
 ANSWER_RESET=""
 ANSWER_SEEDS=""
 ANSWER_PRESET="${SCHEDULE_PRESET:-}"
+BACKEND_BRANCH_ARG=""
+LIST_GAMES=0
+GAME_FROM_FLAG=0
 
-if [ $# -gt 0 ]; then
+usage() {
+    cat <<'USAGE'
+Usage: deploy-backend.sh [GAME] [RESET] [SEEDS] [PRESET]
+       deploy-backend.sh --game=<ключ|номер> [--reset=y|n] [--seeds=y|n] [--preset=<slug>] [--branch=<ветка>]
+       deploy-backend.sh --list
+
+  GAME    номер из меню, ключ игры (many-teams), имя движка (many_teams) или имя плагина
+  RESET   y/n — сброс БД (db:drop && db:create && db:migrate)
+  SEEDS   y/n — сиды: db:seed:all + сиды выбранного движка (engines/<движок>/db/seeds)
+  PRESET  slug пресета расписания (или переменная SCHEDULE_PRESET)
+  --branch  ветка eraofchange (по умолчанию depl; если выбранного движка в ней нет,
+            берётся первая локальная ветка, где он есть)
+  --list    показать все найденные движки, плагины и игры
+
+Примеры:
+  deploy-backend.sh 2yy                 # game=2, сброс БД, сиды
+  deploy-backend.sh 2 y y igra_mart     # + пресет расписания
+  deploy-backend.sh --game=many-teams y y
+  deploy-backend.sh --game=artel --branch=depl --reset=n --seeds=y
+USAGE
+}
+
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --list)      LIST_GAMES=1; shift ;;
+        --game=*)    ANSWER_GAME="${1#*=}"; GAME_FROM_FLAG=1; shift ;;
+        --engine=*)  ANSWER_GAME="${1#*=}"; GAME_FROM_FLAG=1; shift ;;
+        --plugin=*)  ANSWER_GAME="${1#*=}"; GAME_FROM_FLAG=1; shift ;;
+        --game|--engine|--plugin)
+                     ANSWER_GAME="${2:-}"; GAME_FROM_FLAG=1; shift 2 ;;
+        --reset=*)   ANSWER_RESET="${1#*=}"; shift ;;
+        --seeds=*)   ANSWER_SEEDS="${1#*=}"; shift ;;
+        --preset=*)  ANSWER_PRESET="${1#*=}"; shift ;;
+        --branch=*)  BACKEND_BRANCH_ARG="${1#*=}"; shift ;;
+        --branch)    BACKEND_BRANCH_ARG="${2:-}"; shift 2 ;;
+        -h|--help)   usage; exit 0 ;;
+        --)          shift; POSITIONAL+=("$@"); break ;;
+        -*)          echo "Неизвестный флаг: $1"; echo ""; usage; exit 1 ;;
+        *)           POSITIONAL+=("$1"); shift ;;
+    esac
+done
+if [ ${#POSITIONAL[@]} -gt 0 ]; then
+    set -- "${POSITIONAL[@]}"
+else
+    set --
+fi
+
+if [ "$LIST_GAMES" = "1" ]; then
+    era_report
+    exit 0
+fi
+
+if [ "$GAME_FROM_FLAG" = "1" ]; then
+    # Игра задана флагом: позиционные аргументы — это RESET, SEEDS, PRESET
+    if [ $# -gt 0 ] && [ -z "$ANSWER_RESET" ]; then ANSWER_RESET="$1"; fi
+    if [ $# -gt 1 ] && [ -z "$ANSWER_SEEDS" ]; then ANSWER_SEEDS="$2"; fi
+    if [ $# -gt 2 ] && [ -z "$ANSWER_PRESET" ]; then ANSWER_PRESET="$3"; fi
+elif [ $# -gt 0 ]; then
     ARG1="$1"
     # If only one argument provided, treat as concatenated string (e.g., "2yy")
     if [ $# -eq 1 ] && [ ${#ARG1} -ge 3 ]; then
@@ -45,9 +118,11 @@ if [ $# -gt 0 ]; then
         ANSWER_GAME="$1"
         ANSWER_RESET="$2"
         ANSWER_SEEDS="$3"
-        [ $# -ge 4 ] && ANSWER_PRESET="$4"
+        if [ $# -ge 4 ]; then ANSWER_PRESET="$4"; fi
     fi
-    echo -e "${YELLOW}Automated mode: GAME=$ANSWER_GAME, RESET=$ANSWER_RESET, SEEDS=$ANSWER_SEEDS, PRESET=${ANSWER_PRESET:-<нет>}${NC}\n"
+fi
+if [ -n "$ANSWER_GAME" ] || [ -n "$ANSWER_RESET" ] || [ -n "$ANSWER_SEEDS" ]; then
+    echo -e "${YELLOW}Automated mode: GAME=$ANSWER_GAME, RESET=${ANSWER_RESET:-<спросит>}, SEEDS=${ANSWER_SEEDS:-<спросит>}, PRESET=${ANSWER_PRESET:-<нет>}${NC}\n"
 fi
 
 echo -e "${BLUE}=== ERA Backend Deployment ===${NC}\n"
@@ -57,49 +132,61 @@ SERVER="${BACKEND_DEPLOY_SERVER:-62.173.148.168}"
 USER="deploy"
 DEPLOY_PATH="/opt/era/eraofchange"
 REPO_URL="git@github.com:kmi9work/eraofchange.git"
-BRANCH="depl"
 RBENV_RUBY="3.2.2"
 PASSENGER_RUBY="/home/deploy/.rbenv/shims/ruby"
 KEEP_RELEASES=3
 
 # Ask user to choose game version (or use argument if provided)
 if [ -n "$ANSWER_GAME" ]; then
-    GAME_CHOICE="$ANSWER_GAME"
+    if ! era_resolve_game "$ANSWER_GAME"; then
+        echo -e "${RED}Неизвестная игра: ${ANSWER_GAME}${NC}"
+        echo ""
+        era_list_games
+        exit 1
+    fi
 else
-    echo -e "${YELLOW}Выберите версию игры для деплоя:${NC}"
-    echo "  1) base-game"
-    echo "  2) vassals-and-robbers"
-    echo "  3) artel"
+    echo -e "${YELLOW}Выберите игру для деплоя:${NC}"
+    era_list_games
     echo ""
-    read -p "Выбор [1-3]: " GAME_CHOICE
+    read -p "Выбор [1-${#ERA_GAME_KEYS[@]}]: " GAME_CHOICE
+    if ! era_resolve_game "$GAME_CHOICE"; then
+        echo -e "${RED}Неверный выбор игры.${NC}"
+        exit 1
+    fi
 fi
 
-case "$GAME_CHOICE" in
-    1)
-        GAME_VERSION="base-game"
-        RUN_VASSALS_SEEDS=false
-        RUN_ARTEL_SEEDS=false
-        ;;
-    2)
-        GAME_VERSION="vassals-and-robbers"
-        RUN_VASSALS_SEEDS=true
-        RUN_ARTEL_SEEDS=false
-        ;;
-    3)
-        GAME_VERSION="artel"
-        RUN_VASSALS_SEEDS=false
-        RUN_ARTEL_SEEDS=true
-        ;;
-    *)
-        echo -e "${RED}Неверный выбор. Используется base-game по умолчанию.${NC}"
-        GAME_VERSION="base-game"
-        RUN_VASSALS_SEEDS=false
-        RUN_ARTEL_SEEDS=false
-        ;;
-esac
+GAME_VERSION="$ERA_GAME_KEY"
+ENGINE_NAME="$ERA_GAME_ENGINE"
+ENGINE_SEEDS="$ERA_GAME_SEEDS"
 
 echo ""
-echo -e "${GREEN}Выбрана версия: ${GAME_VERSION}${NC}\n"
+echo -e "${GREEN}Выбрана игра: ${GAME_VERSION}${NC}"
+if [ -n "$ENGINE_NAME" ]; then
+    echo -e "${GREEN}Движок: ${ENGINE_NAME}${NC}"
+    [ -n "$ENGINE_SEEDS" ] && echo -e "${BLUE}Сиды движка: ${ENGINE_SEEDS}${NC}"
+else
+    echo -e "${BLUE}Игра ядра: движки не подключаются${NC}"
+fi
+echo ""
+
+# Ветка: если в ветке по умолчанию нет движка выбранной игры — ищем ветку с ним
+BRANCH="${BACKEND_BRANCH_ARG:-${BACKEND_BRANCH:-depl}}"
+if [ -n "$ENGINE_NAME" ]; then
+    BRANCH_RC=0
+    era_branch_has_engine "$ERA_BACKEND_DIR" "$BRANCH" "$ENGINE_NAME" || BRANCH_RC=$?
+    if [ "$BRANCH_RC" = "1" ]; then
+        if ALT_BRANCH="$(era_branch_for_engine "$ERA_BACKEND_DIR" "$ENGINE_NAME" "$BRANCH" 2>/dev/null)"; then
+            echo -e "${YELLOW}Движка ${ENGINE_NAME} нет в ветке ${BRANCH} — деплой из ветки ${ALT_BRANCH}${NC}\n"
+            BRANCH="$ALT_BRANCH"
+        else
+            echo -e "${RED}Движка ${ENGINE_NAME} нет ни в одной локальной ветке eraofchange.${NC}"
+            echo -e "${YELLOW}Укажите ветку: --branch=<ветка> или BACKEND_BRANCH=<ветка>${NC}"
+            exit 1
+        fi
+    elif [ "$BRANCH_RC" = "2" ]; then
+        echo -e "${YELLOW}eraofchange не git-репозиторий — ветка ${BRANCH} не проверена${NC}\n"
+    fi
+fi
 
 # Check if master.key exists locally (for database password)
 if [ ! -f "$PROJECT_DIR/eraofchange/config/master.key" ]; then
@@ -338,6 +425,8 @@ echo ""
 echo -e "${GREEN}=== Деплой завершен успешно ===${NC}"
 echo -e "${BLUE}Release: ${TIMESTAMP}${NC}"
 echo -e "${BLUE}Версия игры: ${GAME_VERSION}${NC}"
+echo -e "${BLUE}Движок: ${ENGINE_NAME:-<ядро>}${NC}"
+echo -e "${BLUE}Ветка: ${BRANCH}${NC}"
 echo -e "${BLUE}Путь на сервере: ${CURRENT_DIR}${NC}"
 echo ""
 
@@ -468,22 +557,20 @@ if [[ "$LOAD_SEEDS" =~ ^[Yy]$ ]]; then
         }
         
         # Determine which seeds to run based on GAME_VERSION
-        if [ \"${GAME_VERSION}\" = \"artel\" ]; then
-            # Command: db:seed:artel
-            echo '>>> Command: ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:artel'
-            ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:artel || {
-                echo 'Error: Failed to run artel seeds'
-                exit 1
-            }
-        elif [ \"${GAME_VERSION}\" = \"vassals-and-robbers\" ]; then
-            # Command: db:seed:vassals
-            echo '>>> Command: ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:vassals'
-            ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:vassals || {
-                echo 'Error: Failed to run vassals seeds'
-                exit 1
-            }
+        # Сиды движка выбранной игры: грузим файлы engines/<движок>/db/seeds
+        ENGINE=\"${ENGINE_NAME}\"
+        if [ -n \"\$ENGINE\" ]; then
+            if [ -d \"engines/\$ENGINE/db/seeds\" ]; then
+                echo \">>> Загрузка сидов движка \$ENGINE (engines/\$ENGINE/db/seeds)\"
+                ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rails runner 'Dir[\"engines/\$ENGINE/db/seeds/*.rb\"].sort.each { |f| puts f; load f }' || {
+                    echo \"Error: Failed to run \$ENGINE seeds\"
+                    exit 1
+                }
+            else
+                echo \"Движок \$ENGINE отсутствует в релизе — сиды движка не загружены\"
+            fi
         fi
-        
+
         echo '✓ Сиды успешно загружены в production'
     "
     

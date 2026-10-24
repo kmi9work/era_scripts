@@ -17,6 +17,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}=== ERA Backend Deployment (Artel) ===${NC}\n"
+echo -e "${YELLOW}Примечание: сценарий устарел. То же самое делает ${NC}"
+echo -e "${YELLOW}./era_scripts/deploy-backend.sh --game=artel (реестр игр, выбор ветки, сиды движка).${NC}\n"
 
 # Configuration
 SERVER="${BACKEND_DEPLOY_SERVER:-62.173.148.168}"

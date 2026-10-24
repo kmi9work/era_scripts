@@ -50,6 +50,96 @@ esac
 echo ""
 echo -e "${GREEN}Выбран проект: ${PROJECT_LABEL}${NC}\n"
 
+# --- Публикация APK на сайте ---
+# Файл кладём в каталог ВНЕ релизов фронта (деплой фронта их перезаписывает),
+# а внутри текущего релиза на этот каталог указывает симлинк apk -> ../../downloads
+# (его пересоздаёт era_scripts/deploy-frontend.sh при каждом деплое).
+APK_PUBLISH_SERVER="${APK_PUBLISH_SERVER:-${FRONTEND_DEPLOY_SERVER:-62.173.148.168}}"
+APK_PUBLISH_USER="${APK_PUBLISH_USER:-deploy}"
+APK_PUBLISH_DIR="/opt/era/era_front/downloads"
+APK_PUBLIC_URL="https://epoha.igroteh.su/apk"
+if [ "$PROJECT_APP" = "era_players" ]; then
+    APK_NAME_PREFIX="era-players"
+else
+    APK_NAME_PREFIX="era"
+fi
+
+# publish_apk <путь к apk> <тип сборки: release|debug>
+publish_apk() {
+    local apk_path="$1"
+    local build_type="$2"
+    local remote_name="${APK_NAME_PREFIX}-${ANDROID_FLAVOR_CAP,,}.apk"
+    local answer=""
+    local local_size local_sha
+
+    if [ ! -s "$apk_path" ]; then
+        echo -e "${RED}Публикация пропущена: файл не найден или пуст — ${apk_path}${NC}"
+        return 1
+    fi
+
+    local_size=$(stat -c%s "$apk_path")
+    local_sha=$(sha256sum "$apk_path" | awk '{print $1}')
+
+    echo ""
+    echo -e "${YELLOW}Публикация на сайте:${NC}"
+    echo -e "  файл:     ${apk_path}"
+    echo -e "  на сервере: ${APK_PUBLISH_USER}@${APK_PUBLISH_SERVER}:${APK_PUBLISH_DIR}/${remote_name}"
+    echo -e "  ссылка:   ${APK_PUBLIC_URL}/${remote_name}"
+    echo -e "  размер:   $(( local_size / 1024 / 1024 )) МБ, sha256: ${local_sha}"
+
+    if [ "$build_type" = "debug" ]; then
+        read -p "Опубликовать DEBUG-сборку? Она перезапишет release-версию по этой ссылке [y/N]: " answer
+        case "$answer" in [yYдД]*) ;; *) echo -e "${YELLOW}Публикация отменена${NC}"; return 0 ;; esac
+    else
+        read -p "Опубликовать APK на сайте? [Y/n]: " answer
+        case "$answer" in [nNтТ]*) echo -e "${YELLOW}Публикация отменена${NC}"; return 0 ;; esac
+    fi
+
+    echo -e "${YELLOW}Каталог на сервере...${NC}"
+    ssh "${APK_PUBLISH_USER}@${APK_PUBLISH_SERVER}" "mkdir -p ${APK_PUBLISH_DIR}" || {
+        echo -e "${RED}Не удалось подготовить каталог на сервере${NC}"; return 1; }
+
+    echo -e "${YELLOW}Загрузка (${local_size} байт)...${NC}"
+    rsync -av --progress "$apk_path" \
+        "${APK_PUBLISH_USER}@${APK_PUBLISH_SERVER}:${APK_PUBLISH_DIR}/${remote_name}" || {
+        echo -e "${RED}Загрузка не удалась${NC}"; return 1; }
+
+    # Симлинк внутри текущего релиза фронта: без него nginx отдаст на /apk/... index.html SPA
+    ssh "${APK_PUBLISH_USER}@${APK_PUBLISH_SERVER}" "
+        ls -l ${APK_PUBLISH_DIR}/${remote_name}
+        if [ -e /opt/era/era_front/current ]; then
+            ln -sfn ../../downloads /opt/era/era_front/current/apk
+            echo 'симлинк current/apk -> ../../downloads обновлён'
+        else
+            echo 'ВНИМАНИЕ: /opt/era/era_front/current нет — ссылка заработает после деплоя фронта'
+        fi
+    " || echo -e "${YELLOW}Не удалось обновить симлинк, проверьте ссылку вручную${NC}"
+
+    # Проверка отдачи: размер должен совпасть, content-type не должен быть text/html
+    echo -e "${YELLOW}Проверка ссылки...${NC}"
+    local headers
+    headers=$(curl -sS -I -u "${PROD_BASIC_AUTH_USERNAME}:${PROD_BASIC_AUTH_PASSWORD}" \
+        "${APK_PUBLIC_URL}/${remote_name}" 2>&1) || true
+    echo "$headers" | sed 's/^/  /'
+
+    local remote_size remote_type
+    remote_size=$(echo "$headers" | awk 'tolower($1)=="content-length:"{gsub(/\r/,"",$2); print $2}')
+    remote_type=$(echo "$headers" | awk 'tolower($1)=="content-type:"{gsub(/\r/,"",$2); print $2}')
+
+    if [ "$remote_type" = "text/html" ]; then
+        echo -e "${RED}ВНИМАНИЕ: по ссылке отдаётся HTML, а не APK.${NC}"
+        echo -e "${YELLOW}Значит в nginx нет отдельной локации для /apk/ — нужен блок location ^~ /apk/ (см. era_scripts/NGINX_FIX.md).${NC}"
+        return 1
+    elif [ -n "$remote_size" ] && [ "$remote_size" != "$local_size" ]; then
+        echo -e "${RED}ВНИМАНИЕ: размер на сервере (${remote_size}) не совпадает с локальным (${local_size})${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✓ APK опубликован: ${APK_PUBLIC_URL}/${remote_name}${NC}"
+    return 0
+}
+
+
 # Ask user what game variant to build
 echo -e "${YELLOW}Для какой версии игры собрать приложение?${NC}"
 echo "  1) Era of Change (base-game)"
@@ -144,6 +234,8 @@ case "$BUILD_CHOICE" in
                 echo -e "${GREEN}✓ Debug APK создан${NC}"
                 echo -e "${BLUE}Flavor: ${ACTIVE_GAME}${NC}"
                 echo -e "${BLUE}Путь: ${PROJECT_APP}/android/app/build/outputs/apk/${ANDROID_FLAVOR_CAP,,}/debug/${NC}"
+                APK_BUILT="${PROJECT_DIR}/${PROJECT_APP}/android/app/build/outputs/apk/${ANDROID_FLAVOR_CAP,,}/debug/app-${ANDROID_FLAVOR_CAP,,}-debug.apk"
+                publish_apk "$APK_BUILT" debug || PUBLISH_FAILED=1
             else
                 echo -e "${GREEN}Сборка Release APK...${NC}"
                 echo -e "${YELLOW}Примечание: требуется настроенный keystore${NC}"
@@ -153,6 +245,8 @@ case "$BUILD_CHOICE" in
                 echo -e "${GREEN}✓ Release APK создан${NC}"
                 echo -e "${BLUE}Flavor: ${ACTIVE_GAME}${NC}"
                 echo -e "${BLUE}Путь: ${PROJECT_APP}/android/app/build/outputs/apk/${ANDROID_FLAVOR_CAP,,}/release/${NC}"
+                APK_BUILT="${PROJECT_DIR}/${PROJECT_APP}/android/app/build/outputs/apk/${ANDROID_FLAVOR_CAP,,}/release/app-${ANDROID_FLAVOR_CAP,,}-release.apk"
+                publish_apk "$APK_BUILT" release || PUBLISH_FAILED=1
             fi
         else
             echo ""
@@ -197,6 +291,15 @@ esac
 
 echo ""
 echo -e "${GREEN}=== Готово ===${NC}"
+if [ "${PUBLISH_FAILED:-0}" = "1" ]; then
+    echo -e "${RED}Публикация APK на сайте не удалась (сборка при этом готова).${NC}"
+    echo -e "${YELLOW}Проверьте ssh/rsync до ${APK_PUBLISH_USER}@${APK_PUBLISH_SERVER}, а затем повторите публикацию вручную:${NC}"
+    echo -e "${BLUE}  rsync -av --progress ${APK_BUILT} ${APK_PUBLISH_USER}@${APK_PUBLISH_SERVER}:${APK_PUBLISH_DIR}/${APK_NAME_PREFIX}-${ANDROID_FLAVOR_CAP,,}.apk${NC}"
+    echo -e "${BLUE}  ssh ${APK_PUBLISH_USER}@${APK_PUBLISH_SERVER} 'ln -sfn ../../downloads /opt/era/era_front/current/apk'${NC}"
+    echo -e "${BLUE}Примечание: для возврата к dev-режиму запустите ./era_scripts/start-dev.sh${NC}"
+    echo ""
+    exit 1
+fi
 echo -e "${BLUE}Примечание: для возврата к dev-режиму запустите ./era_scripts/start-dev.sh${NC}"
 echo ""
 

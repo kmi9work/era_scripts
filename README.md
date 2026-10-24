@@ -17,8 +17,8 @@
 
 ### Деплой
 
-- [`deploy-frontend.sh`](#7-deploy-frontendsh---деплой-фронтенда-на-production-сервер) - Деплой фронтенда на production (base-game / vassals-and-robbers / artel)
-- [`deploy-backend.sh`](#8-deploy-backendsh---деплой-бэкенда-на-production-сервер) - Деплой бэкенда на production (base-game / vassals-and-robbers / artel)
+- [`deploy-frontend.sh`](#7-deploy-frontendsh---деплой-фронтенда-на-production-сервер) - Деплой фронтенда на production (любая игра из реестра движков/плагинов)
+- [`deploy-backend.sh`](#8-deploy-backendsh---деплой-бэкенда-на-production-сервер) - Деплой бэкенда на production (любой движок из `eraofchange/engines`)
 - [`deploy-artel.sh`](deploy-artel.sh) - Деплой бэкенда с игрой Artel (без выбора версии)
 - [`seed-artel.sh`](seed-artel.sh) - Заливка сидов движка Artel (локально или на сервере)
 
@@ -106,6 +106,24 @@
 - Обновляет `era_native/src/config.ts` с продакшн-настройками
 - Добавляет Basic Auth (Login: Anton, Password: aoFa4-cah)
 - Запускает сборку выбранного типа
+- После успешной сборки APK предлагает опубликовать его на сайте (см. ниже)
+
+**Публикация APK на сайте:**
+
+Собранный APK по подтверждению (`[Y/n]`, для debug-сборки по умолчанию `N`) загружается на
+production-сервер и становится доступен по ссылке
+`https://epoha.igroteh.su/apk/era-<игра>.apk` (`era-base.apk`, `era-vassals.apk`, `era-artel.apk`;
+для `era_players` — `era-players-<игра>.apk`). Скачать его можно из приложения era_front:
+иконка «Скачать приложение для Android» в навбаре (`src/layouts/components/AppDownloadMenu.vue`).
+
+- Файлы лежат в `/opt/era/era_front/downloads` — ВНЕ релизов фронта, поэтому деплой их не удаляет.
+- Внутри текущего релиза на этот каталог указывает симлинк `apk -> ../../downloads`; его создаёт
+  `deploy-frontend.sh` при каждом деплое (без симлинка nginx отдаст на `/apk/...` index.html вместо файла).
+- Скрипт сам проверяет отдачу (HEAD-запрос): размер должен совпасть с локальным, а `content-type`
+  не должен быть `text/html`.
+- Если версия ещё не собрана, файла нет: пункт в меню помечается «не опубликовано» и остаётся
+  неактивным. Точный 404 (вместо SPA-заглушки) даёт только отдельная локация в nginx —
+  см. `NGINX_FIX.md`, раздел «Раздача APK».
 
 **Примечание:** После использования build-prod.sh для возврата к dev-режиму запустите `./era_scripts/start-dev.sh`
 
@@ -126,8 +144,8 @@
 ```
 
 **Что делает:**
-1. Интерактивный выбор версии игры (base-game, vassals-and-robbers или artel)
-2. Локальная сборка фронтенда с правильной настройкой `.env`
+1. Выбор игры: список собирается из репозиториев (`eraofchange/engines/*` + `era_front/src/plugins/game-plugins/*`), см. «Реестр игр» ниже
+2. Локальная сборка фронтенда с правильной настройкой `.env` (`VITE_ACTIVE_GAME` = ключ выбранной игры)
 3. Загрузка собранного `dist` на сервер через `rsync`
 4. Создание release директории и симлинка `current`
 5. Очистка старых releases (оставляет последние 3)
@@ -137,6 +155,17 @@
 - Пользователь: `deploy`
 - Путь на сервере: `/opt/era/era_front`
 - Backend URL: `https://epoha.igroteh.su/backend`
+
+**Выбор плагина без интерактивного меню:**
+```bash
+./era_scripts/deploy-frontend.sh --list                 # все движки и плагины
+./era_scripts/deploy-frontend.sh --game=many-teams      # ключ игры / номер из меню
+./era_scripts/deploy-frontend.sh --plugin=many_teams    # имя каталога плагина
+```
+Если плагина выбранной игры нет в рабочей копии `era_front`, но он есть в другой
+ветке, скрипт остановится и назовёт ветку (иначе соберётся ядро вместо игры).
+Если плагина нет ни в одной ветке (например, `artel`), скрипт предупредит и
+продолжит — фронт соберётся на ядре.
 
 **Примеры использования:**
 ```bash
@@ -163,14 +192,14 @@ cap production frontend:deploy_vassals # для vassals-and-robbers
 ```
 
 **Что делает:**
-1. Интерактивный выбор версии игры (base-game, vassals-and-robbers или artel)
-2. Клонирование кода из репозитория на сервер (ветка `depl`)
+1. Выбор игры/движка: список собирается из `eraofchange/engines/*`, см. «Реестр игр» ниже
+2. Клонирование кода из репозитория на сервер (ветка `depl`, либо ветка, в которой есть выбранный движок)
 3. Установка зависимостей через Bundler
-4. Настройка конфигурационных файлов (database.yml, master.key, .env.production)
+4. Настройка конфигурационных файлов (database.yml, master.key, .env.production с `ACTIVE_GAME` выбранной игры)
 5. Создание симлинков для shared файлов и директорий
 6. Остановка Passenger
 7. Выполнение миграций базы данных
-8. Запуск сидов (для vassals-and-robbers и artel — специфичные сиды выполняются вручную при необходимости, см. seed-artel.sh)
+8. Запуск сидов (`db:seed:all`, затем `engines/<движок>/db/seeds/*.rb` выбранного движка)
 9. Обновление конфигурации Passenger (systemd)
 10. Переключение на новый релиз через симлинк `current`
 11. Запуск Passenger
@@ -180,7 +209,7 @@ cap production frontend:deploy_vassals # для vassals-and-robbers
 - Сервер задается через переменную окружения `BACKEND_DEPLOY_SERVER` (по умолчанию `62.173.148.168`)
 - Пользователь: `deploy`
 - Путь на сервере: `/opt/era/eraofchange`
-- Ветка репозитория: `depl`
+- Ветка репозитория: `depl` (переопределяется `BACKEND_BRANCH=<ветка>` или `--branch=<ветка>`; если выбранного движка в ветке нет, берётся первая локальная ветка, где он есть)
 - Ruby версия: `3.2.2` (через rbenv)
 - Passenger управляется через systemd
 
@@ -188,6 +217,18 @@ cap production frontend:deploy_vassals # для vassals-and-robbers
 - На сервере должны быть установлены: rbenv, Ruby 3.2.2, PostgreSQL
 - Файлы `config/master.key` и `config/database_prod.yml` должны существовать локально (опционально, если они уже есть на сервере)
 - SSH доступ к серверу с правами sudo для управления Passenger
+
+**Выбор движка без интерактивного меню:**
+```bash
+./era_scripts/deploy-backend.sh --list                  # все движки и плагины
+./era_scripts/deploy-backend.sh --game=many-teams       # игра/движок по ключу или номеру
+./era_scripts/deploy-backend.sh --game=many-teams y y   # + reset=y, seeds=y
+./era_scripts/deploy-backend.sh --game=artel --branch=depl --reset=n --seeds=y
+./era_scripts/deploy-backend.sh many-teams n y          # ключ игры и позиционные ответы тоже работают
+```
+Старые формы вызова не изменились: `./era_scripts/deploy-backend.sh 2yy`,
+`./era_scripts/deploy-backend.sh 2 y y igra_mart` (номера 1–3 сохраняют прежний
+смысл: base-game, vassals-and-robbers, artel; новые игры идут следующими номерами).
 
 **Примеры использования:**
 ```bash
@@ -204,6 +245,50 @@ cd eraofchange
 cap production backend:deploy          # для base-game
 cap production backend:deploy_vassals   # для vassals-and-robbers
 ```
+
+### Реестр игр: движки и плагины
+
+`deploy-backend.sh` и `deploy-frontend.sh` не содержат списка игр — они собирают его
+из репозиториев через `lib/era-games.sh`:
+
+- **движки** — каталоги `eraofchange/engines/*`, в которых есть `lib/<имя>/engine.rb`;
+- **плагины** — каталоги `era_front/src/plugins/game-plugins/*` (и то же в
+  `era_native`, `era_players` — они показываются в `--list`);
+- **ключ игры** (значение `ACTIVE_GAME` / `VITE_ACTIVE_GAME`) выводится в таком порядке:
+  1. `eraofchange/engines/<движок>/era_game.conf` — манифест движка, строка `key = ...`;
+  2. константа `ACTIVE_GAME = "..."` в `engines/<движок>/lib/<движок>.rb`;
+  3. сравнение `ENV['ACTIVE_GAME'] == '...'` в `engines/<движок>/lib/<движок>/engine.rb`;
+  4. иначе — имя каталога движка, подчёркивания заменяются дефисами.
+  Для плагина — `GAME_KEY = '...'` или `GAME_CONFIG.isActive('...')` в `index.js`/`index.ts`,
+  иначе имя каталога плагина.
+
+Движок и плагин сопоставляются по ключу без учёта регистра, `-` и `_`
+(`many_teams` ≡ `many-teams`).
+
+Нумерация в меню: `1) base-game`, `2) vassals-and-robbers`, `3) artel` — как раньше,
+остальные движки идут по алфавиту (сейчас `4) era_great`, `5) many-teams`).
+
+Посмотреть реестр целиком:
+
+```bash
+./era_scripts/deploy-backend.sh --list
+./era_scripts/deploy-frontend.sh --list
+```
+
+**Добавить новый движок:** положить его в `eraofchange/engines/<имя>` (гем в `Gemfile`
+подключается как обычно) — он появится в меню сам. Если ключ игры должен отличаться
+от имени каталога, добавить `eraofchange/engines/<имя>/era_game.conf`:
+
+```
+key = my-game
+```
+
+**Добавить новый плагин:** каталог в `era_front/src/plugins/game-plugins/<имя>` с
+`GAME_KEY` в `index.js` — он появится в меню фронта сам.
+
+Ветка деплоя бэкенда проверяется по движку: если в `depl` движка нет (например,
+`many_teams` живёт в ветке `many_teams`), скрипт возьмёт ветку, где он есть, и
+скажет об этом. Переопределить: `--branch=<ветка>` или `BACKEND_BRANCH=<ветка>`.
 
 ### 9. `get-ip.sh` - Определение IP адреса
 

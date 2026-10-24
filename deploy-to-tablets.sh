@@ -121,6 +121,33 @@ else
     echo -e "${YELLOW}Размер: $(du -h "$APK_PATH" | cut -f1)${NC}\n"
 fi
 
+# === Проверка свежести APK ===
+# Скрипт берёт самый свежий *.apk по mtime, а сборка могла ещё не дописать файл
+# (или собран другой флейвор) — тогда на планшеты уедет прошлая версия, и правки
+# «не подтянутся». Ловим это до установки, а не после.
+case "$APK_PATH" in
+    *"/era_players/"*) SRC_DIR="$PROJECT_DIR/era_players" ;;
+    *)                 SRC_DIR="$PROJECT_DIR/era_native" ;;
+esac
+
+APK_TIME=$(date -r "$APK_PATH" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "?")
+STALE_FILES=$(find "$SRC_DIR/src" -type f -newer "$APK_PATH" 2>/dev/null | head -5)
+
+if [ -n "$STALE_FILES" ]; then
+    echo -e "${RED}=== ВНИМАНИЕ: APK старше исходников ===${NC}"
+    echo -e "${YELLOW}APK собран: ${APK_TIME}, но в проекте есть файлы новее — они НЕ попадут в сборку:${NC}"
+    echo "$STALE_FILES" | sed 's/^/    /'
+    echo -e "${YELLOW}Похоже, сборка ещё шла или установлен APK другого флейвора/проекта.${NC}"
+    echo -e "${YELLOW}Совет: передайте путь явно — ./era_scripts/deploy-to-tablets.sh ${SRC_DIR#$PROJECT_DIR/}/android/app/build/outputs/apk/base/release/app-base-release.apk${NC}"
+    echo ""
+    read -p "Всё равно установить этот (устаревший) APK? [y/N]: " STALE_CONFIRM
+    if [[ ! "$STALE_CONFIRM" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Отменено до установки: сначала соберите APK.${NC}"
+        exit 1
+    fi
+    echo ""
+fi
+
 # Configure each device to allow installation without prompts
 echo -e "${BLUE}=== Настройка разрешений на планшетах ===${NC}\n"
 
@@ -180,11 +207,12 @@ RESULTS=()
 for SERIAL in $DEVICE_LIST; do
     echo -e "${CYAN}Установка на ${SERIAL}...${NC}"
     
-    # Uninstall existing app (if any) - try both package names
+    # Uninstall existing app (if any). Реальные applicationId проектов:
+    # com.era_native / com.era_native.vassals / com.era_native.artel.
     echo -e "  ${YELLOW}Откат старой версии...${NC}"
-    adb -s "$SERIAL" uninstall su.era.of.change.base 2>/dev/null || true
-    adb -s "$SERIAL" uninstall su.era.of.change.vassals 2>/dev/null || true
-    adb -s "$SERIAL" uninstall su.era.of.change.artel 2>/dev/null || true
+    adb -s "$SERIAL" uninstall com.era_native 2>/dev/null || true
+    adb -s "$SERIAL" uninstall com.era_native.vassals 2>/dev/null || true
+    adb -s "$SERIAL" uninstall com.era_native.artel 2>/dev/null || true
     
     # Install APK with replace flag
     echo -e "  ${YELLOW}Установка...${NC}"

@@ -36,7 +36,7 @@ NC='\033[0m' # No Color
 #   ./deploy-backend.sh --list     # показать все найденные движки/плагины и игры
 # Пресет расписания также можно задать переменной окружения SCHEDULE_PRESET=<slug>.
 # Синхронизацию пресетов можно пропустить: SKIP_PRESETS_SYNC=1
-# Ветка деплоя: BACKEND_BRANCH=<ветка> (по умолчанию depl; если движка в ветке нет,
+# Ветка деплоя: BACKEND_BRANCH=<ветка> (по умолчанию master; если движка в ветке нет,
 # берётся первая локальная ветка, где он есть).
 # If no arguments provided, script prompts interactively as usual
 
@@ -58,7 +58,7 @@ Usage: deploy-backend.sh [GAME] [RESET] [SEEDS] [PRESET]
   RESET   y/n — сброс БД (db:drop && db:create && db:migrate)
   SEEDS   y/n — сиды: db:seed:all + сиды выбранного движка (engines/<движок>/db/seeds)
   PRESET  slug пресета расписания (или переменная SCHEDULE_PRESET)
-  --branch  ветка eraofchange (по умолчанию depl; если выбранного движка в ней нет,
+  --branch  ветка eraofchange (по умолчанию master; если выбранного движка в ней нет,
             берётся первая локальная ветка, где он есть)
   --list    показать все найденные движки, плагины и игры
 
@@ -170,7 +170,7 @@ fi
 echo ""
 
 # Ветка: если в ветке по умолчанию нет движка выбранной игры — ищем ветку с ним
-BRANCH="${BACKEND_BRANCH_ARG:-${BACKEND_BRANCH:-depl}}"
+BRANCH="${BACKEND_BRANCH_ARG:-${BACKEND_BRANCH:-master}}"
 if [ -n "$ENGINE_NAME" ]; then
     BRANCH_RC=0
     era_branch_has_engine "$ERA_BACKEND_DIR" "$BRANCH" "$ENGINE_NAME" || BRANCH_RC=$?
@@ -539,8 +539,21 @@ if [[ "$LOAD_SEEDS" =~ ^[Yy]$ ]]; then
     if [ -n "$ANSWER_PRESET" ]; then
         PRESET_ENV="SCHEDULE_PRESET=${ANSWER_PRESET}"
     fi
-    
-    ssh "${USER}@${SERVER}" "
+
+    # Сиды движка грузятся тем же db:seed:all через ERA_ENGINE_SEEDS=<каталог движка>.
+    # Раньше здесь стоял отдельный `rails runner 'Dir["engines/$ENGINE/db/seeds/*.rb"]'`:
+    # $ENGINE внутри одинарных кавычек на сервере не раскрывался, глоб не находил
+    # файлов, runner выходил с кодом 0 — сиды движка молча не загружались, а скрипт
+    # всё равно печатал «✓ Сиды загружены».
+    ENGINE_ENV=""
+    if [ -n "$ENGINE_NAME" ]; then
+        ENGINE_ENV="ERA_ENGINE_SEEDS=${ENGINE_NAME}"
+        echo -e "${BLUE}Сиды: ядро + движок ${ENGINE_NAME}${NC}"
+    else
+        echo -e "${BLUE}Сиды: только ядро (игра без движка)${NC}"
+    fi
+
+    if ! ssh "${USER}@${SERVER}" "
         cd ${CURRENT_DIR}
         
         # Setup rbenv environment
@@ -549,30 +562,20 @@ if [[ "$LOAD_SEEDS" =~ ^[Yy]$ ]]; then
         eval \"\$(rbenv init - bash)\"
         rbenv local ${RBENV_RUBY}
 
-        # Command: db:seed:all
-        echo '>>> Command: ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all'
-        ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all || {
+        # Сиды ядра и (если игра с движком) сиды движка — одной командой.
+        # db:seed:all падает с кодом 1, если сиды движка не найдены: пустой список
+        # файлов, отсутствующий каталог или незаданный ERA_ENGINE_SEEDS — ошибка.
+        echo '>>> Command: ${PRESET_ENV} ${ENGINE_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all'
+        ${PRESET_ENV} ${ENGINE_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake db:seed:all || {
             echo 'Error: Failed to run seeds'
             exit 1
         }
-        
-        # Determine which seeds to run based on GAME_VERSION
-        # Сиды движка выбранной игры: грузим файлы engines/<движок>/db/seeds
-        ENGINE=\"${ENGINE_NAME}\"
-        if [ -n \"\$ENGINE\" ]; then
-            if [ -d \"engines/\$ENGINE/db/seeds\" ]; then
-                echo \">>> Загрузка сидов движка \$ENGINE (engines/\$ENGINE/db/seeds)\"
-                ${PRESET_ENV} RAILS_ENV=production DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rails runner 'Dir[\"engines/\$ENGINE/db/seeds/*.rb\"].sort.each { |f| puts f; load f }' || {
-                    echo \"Error: Failed to run \$ENGINE seeds\"
-                    exit 1
-                }
-            else
-                echo \"Движок \$ENGINE отсутствует в релизе — сиды движка не загружены\"
-            fi
-        fi
 
-        echo '✓ Сиды успешно загружены в production'
-    "
+        echo '✓ Сиды загружены в production'
+    "; then
+        echo -e "${RED}✗ Сиды НЕ загружены (см. вывод выше). Деплой прерван.${NC}"
+        exit 1
+    fi
     
     echo -e "${GREEN}✓ Сиды загружены в production${NC}\n"
 else

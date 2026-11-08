@@ -1,6 +1,23 @@
 #!/bin/bash
 # Development startup script for ERA project
 # Launches backend (Rails), frontend (Vite), and mobile (Expo) in tmux sessions
+#
+# Игры не зашиты в скрипт: список берётся из реестра era_scripts/lib/era-games.sh
+# (base-game + все плагины выбранного клиента, включая many_teams). Android-вариант
+# (--mode в react-native run-android) определяется по buildConfigField ACTIVE_GAME
+# в <клиент>/android/app/build.gradle.
+#
+# Использование:
+#   ./era_scripts/start-dev.sh                       # интерактивно
+#   ./era_scripts/start-dev.sh 2111                  # проект, игра, мобильное, android
+#   ./era_scripts/start-dev.sh --project=era_native --game=many-teams --mobile=1
+#     --project  era_native | era_players | 1 | 2
+#     --game     номер из меню клиента, ключ игры (many-teams), имя движка
+#                (many_teams) или каталога плагина (many_teams)
+#     --mobile   1 = запустить Metro, 2 = пропустить
+#     --android  1 = собрать на устройство, 2 = только Metro
+#     --list     показать игры клиента и выйти
+#     --dry-run  только разобрать выбор и напечатать план, ничего не запускать
 
 set -e
 
@@ -9,6 +26,10 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Get the project root directory (one level up)
 PROJECT_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
+
+# Единый реестр игр/плагинов платформы
+source "$SCRIPTS_DIR/lib/era-games.sh"
+era_build_registry
 
 # Colors for output
 RED='\033[0;31m'
@@ -19,15 +40,44 @@ NC='\033[0m' # No Color
 
 echo -e "${BLUE}=== ERA Development Startup ===${NC}\n"
 
-# Parse choices from positional argument (e.g. ./start-dev.sh 2111)
-# Digits: 1=PROJECT_CHOICE, 2=GAME_CHOICE, 3=MOBILE_CHOICE, 4=ANDROID_CHOICE
-if [ -n "$1" ]; then
-    ARG="$1"
-    [ -z "$PROJECT_CHOICE" ] && PROJECT_CHOICE="${ARG:0:1}"
-    [ -z "$GAME_CHOICE" ]    && GAME_CHOICE="${ARG:1:1}"
-    [ -z "$MOBILE_CHOICE" ]  && MOBILE_CHOICE="${ARG:2:1}"
-    [ -z "$ANDROID_CHOICE" ] && ANDROID_CHOICE="${ARG:3:1}"
-fi
+# --- Аргументы ---------------------------------------------------------------
+# Позиционная последовательность цифр (совместимо со старым вызовом 2111):
+#   1-я — проект, 2-я — игра из меню клиента, 3-я — мобильное, 4-я — Android.
+PROJECT_CHOICE="${PROJECT_CHOICE:-}"
+GAME_CHOICE="${GAME_CHOICE:-}"
+MOBILE_CHOICE="${MOBILE_CHOICE:-}"
+ANDROID_CHOICE="${ANDROID_CHOICE:-}"
+LIST_ONLY=0
+DRY_RUN=0
+
+for _arg in "$@"; do
+    case "$_arg" in
+        --project=*) PROJECT_CHOICE="${_arg#*=}" ;;
+        --game=*)    GAME_CHOICE="${_arg#*=}" ;;
+        --mobile=*)  MOBILE_CHOICE="${_arg#*=}" ;;
+        --android=*) ANDROID_CHOICE="${_arg#*=}" ;;
+        --list)      LIST_ONLY=1 ;;
+        --dry-run)   DRY_RUN=1 ;;
+        -h|--help)   sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --*)
+            echo -e "${RED}Неизвестный аргумент: ${_arg}${NC}"
+            echo -e "${YELLOW}См. --help${NC}"
+            exit 1
+            ;;
+        *)
+            if [[ "$_arg" =~ ^[0-9]{1,4}$ ]]; then
+                [ -z "$PROJECT_CHOICE" ] && PROJECT_CHOICE="${_arg:0:1}"
+                [ -z "$GAME_CHOICE" ]    && GAME_CHOICE="${_arg:1:1}"
+                [ -z "$MOBILE_CHOICE" ]  && MOBILE_CHOICE="${_arg:2:1}"
+                [ -z "$ANDROID_CHOICE" ] && ANDROID_CHOICE="${_arg:3:1}"
+            else
+                echo -e "${RED}Неизвестный аргумент: ${_arg}${NC}"
+                echo -e "${YELLOW}См. --help${NC}"
+                exit 1
+            fi
+            ;;
+    esac
+done
 
 # Ask which project to run (unless already set)
 if [ -z "$PROJECT_CHOICE" ]; then
@@ -39,49 +89,116 @@ if [ -z "$PROJECT_CHOICE" ]; then
 fi
 
 case "$PROJECT_CHOICE" in
-    2)
+    1|era_native)
+        PROJECT_APP="era_native"
+        PROJECT_LABEL="era_native (мастера)"
+        ;;
+    2|era_players)
         PROJECT_APP="era_players"
         PROJECT_LABEL="era_players (игроки)"
         ;;
     *)
-        PROJECT_APP="era_native"
-        PROJECT_LABEL="era_native (мастера)"
+        echo -e "${RED}Неизвестный проект: ${PROJECT_CHOICE} (ожидается era_native или era_players)${NC}"
+        exit 1
         ;;
 esac
+PROJECT_REPO="$PROJECT_DIR/$PROJECT_APP"
+
+if [ ! -d "$PROJECT_REPO/src/plugins/game-plugins" ]; then
+    echo -e "${RED}Не найден каталог плагинов: ${PROJECT_REPO}/src/plugins/game-plugins${NC}"
+    exit 1
+fi
 
 echo -e "${GREEN}Выбран проект: ${PROJECT_LABEL}${NC}\n"
+
+# Список игр этого клиента (base-game + его плагины)
+GAME_LIST=()
+while IFS= read -r _game_key; do
+    [ -n "$_game_key" ] && GAME_LIST+=("$_game_key")
+done < <(era_client_games "$PROJECT_REPO")
+
+if [ "${#GAME_LIST[@]}" -eq 0 ]; then
+    echo -e "${RED}В ${PROJECT_APP} не найдено ни одной игры (ни плагинов, ни base-game)${NC}"
+    exit 1
+fi
+
+print_game_menu() {
+    local i=1 key
+    for key in "${GAME_LIST[@]}"; do
+        printf '  %d) %-20s %s\n' "$i" "$key" "$(era_client_game_description "$PROJECT_REPO" "$key")"
+        i=$((i + 1))
+    done
+}
+
+if [ "$LIST_ONLY" = "1" ]; then
+    echo -e "${GREEN}${PROJECT_LABEL} — доступные игры:${NC}"
+    print_game_menu
+    echo ""
+    echo -e "${BLUE}Все игры платформы (реестр era-games.sh):${NC}"
+    era_list_games
+    exit 0
+fi
 
 # Ask user which game to run (unless already set)
 if [ -z "$GAME_CHOICE" ]; then
     echo -e "${YELLOW}Выберите игру для запуска:${NC}"
-    echo "  1) base-game (Era of Change - базовая игра)"
-    echo "  2) vassals-and-robbers (Vassals and Robbers - новая игра)"
-    echo "  3) artel (Artel - новая игра)"
+    print_game_menu
     echo ""
-    read -p "Выбор [1-3]: " GAME_CHOICE
+    read -p "Выбор [1-${#GAME_LIST[@]}]: " GAME_CHOICE
 fi
 
-case "$GAME_CHOICE" in
-    1)
-        ACTIVE_GAME="base-game"
-        VITE_ACTIVE_GAME="base-game"
-        ;;
-    2)
-        ACTIVE_GAME="vassals-and-robbers"
-        VITE_ACTIVE_GAME="vassals-and-robbers"
-        ;;
-    3)
-        ACTIVE_GAME="artel"
-        VITE_ACTIVE_GAME="artel"
-        ;;
-    *)
-        echo -e "${YELLOW}Неверный выбор. Используется base-game${NC}"
-        ACTIVE_GAME="base-game"
-        VITE_ACTIVE_GAME="base-game"
-        ;;
-esac
+# Выбор игры: номер из меню клиента, ключ игры, имя движка или каталога плагина.
+GAME_CHOICE="${GAME_CHOICE:-1}"
+RESOLVE_RC=0
+era_resolve_client_game "$PROJECT_REPO" "$GAME_CHOICE" || RESOLVE_RC=$?
 
-echo -e "\n${GREEN}Выбрана игра: ${ACTIVE_GAME}${NC}\n"
+if [ "$RESOLVE_RC" = "2" ]; then
+    echo -e "${YELLOW}Игра «${ERA_GAME_KEY}» есть в платформе, но не в ${PROJECT_APP}:${NC}"
+    echo -e "${YELLOW}нет каталога src/plugins/game-plugins с таким GAME_KEY.${NC}"
+fi
+if [ "$RESOLVE_RC" != "0" ]; then
+    echo -e "${RED}Игра «${GAME_CHOICE}» недоступна для ${PROJECT_APP}.${NC}"
+    echo -e "${YELLOW}Доступно:${NC}"
+    print_game_menu
+    exit 1
+fi
+
+ACTIVE_GAME="$ERA_GAME_KEY"
+VITE_ACTIVE_GAME="$ACTIVE_GAME"
+GAME_PLUGIN="$(era_plugin_dir "$PROJECT_REPO" "$ACTIVE_GAME" 2>/dev/null || true)"
+
+# Плагин должен быть импортирован в загрузчик, иначе не инициализируется.
+if [ -n "$GAME_PLUGIN" ] && [ -f "$PROJECT_REPO/src/plugins/index.ts" ]; then
+    if ! grep -q "game-plugins/${GAME_PLUGIN}" "$PROJECT_REPO/src/plugins/index.ts"; then
+        echo -e "${RED}ВНИМАНИЕ: плагин ${GAME_PLUGIN} не импортирован в src/plugins/index.ts${NC}"
+    fi
+fi
+
+ANDROID_FLAVOR_RAW="$(era_android_flavor "$PROJECT_REPO" "$ACTIVE_GAME" || true)"
+if [ -n "$ANDROID_FLAVOR_RAW" ]; then
+    ANDROID_MODE="${ANDROID_FLAVOR_RAW}Debug"
+else
+    ANDROID_MODE="baseDebug"
+fi
+
+echo ""
+echo -e "${GREEN}Выбрана игра: ${ACTIVE_GAME}${NC}"
+echo -e "${GREEN}Плагин: ${GAME_PLUGIN:-— (ядро)}${NC}"
+if [ -n "$ANDROID_FLAVOR_RAW" ]; then
+    echo -e "${GREEN}Android-вариант: ${ANDROID_MODE}${NC}"
+else
+    echo -e "${YELLOW}Android-вариант: baseDebug (flavor для ${ACTIVE_GAME} в build.gradle не найден)${NC}"
+fi
+echo ""
+
+if [ "$DRY_RUN" = "1" ]; then
+    echo -e "${YELLOW}--dry-run: дальше ничего не запускается.${NC}"
+    echo -e "  Проект:        ${PROJECT_APP}"
+    echo -e "  Игра:          ${ACTIVE_GAME}"
+    echo -e "  Vite-переменная: VITE_ACTIVE_GAME=${VITE_ACTIVE_GAME}"
+    echo -e "  Android mode:  ${ANDROID_MODE}"
+    exit 0
+fi
 
 # Check if tmux is installed
 if ! command -v tmux &> /dev/null; then
@@ -441,14 +558,9 @@ if [ "$RUN_ANDROID" = "yes" ]; then
     
     cd "$PROJECT_DIR/${PROJECT_APP}"
 
-    # Select correct Android variant (flavor) based on ACTIVE_GAME
-    # (we build 3 apps: base/vassals/artel)
-    ANDROID_MODE="baseDebug"
-    if [ "$ACTIVE_GAME" = "vassals-and-robbers" ]; then
-        ANDROID_MODE="vassalsDebug"
-    elif [ "$ACTIVE_GAME" = "artel" ]; then
-        ANDROID_MODE="artelDebug"
-    fi
+    # Android-вариант уже вычислен выше из buildConfigField ACTIVE_GAME
+    # в android/app/build.gradle (см. ANDROID_MODE): baseDebug/vassalsDebug/
+    # artelDebug/manyteamsDebug — новые flavor подхватываются сами.
 
     # Build command with optional device selector
     # NOTE: RN CLI renamed `--deviceId` -> `--device`

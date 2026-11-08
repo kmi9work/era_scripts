@@ -50,7 +50,7 @@ class USBHTTPTunnel:
         self.password = None
         self._lock = threading.Lock()
 
-    def connect(self):
+    def connect(self, do_reset=True):
         """Open USB connection and set up management tunnel."""
         global usb_core, usb_util
         import usb.core as usb_core
@@ -62,11 +62,12 @@ class USBHTTPTunnel:
 
         # Reset the device to clear any stuck interface state from
         # previous interrupted sessions (claim without release).
-        try:
-            dev.reset()
-            time.sleep(0.5)
-        except Exception:
-            pass
+        if do_reset:
+            try:
+                dev.reset()
+                time.sleep(0.5)
+            except Exception:
+                pass
 
         try:
             dev.set_configuration()
@@ -78,6 +79,35 @@ class USBHTTPTunnel:
         self.dev = dev
 
         return True
+
+    def reopen(self) -> bool:
+        """Re-find the printer and re-claim the tunnel after it re-enumerated.
+
+        A print job (CUPS) or a USB hiccup makes the printer re-enumerate:
+        the old libusb handle goes stale and every request returns nothing
+        until the process is restarted. This re-does connect()+claim so the
+        proxy survives that. No dev.reset() here — the device is already
+        fresh, and resetting it again can re-enumerate it once more.
+        """
+        import usb.util as _usb_util
+
+        try:
+            if self.dev is not None:
+                _usb_util.dispose_resources(self.dev)
+        except Exception:
+            pass
+        self.dev = None
+        self.cookie = ""
+
+        for attempt in range(3):
+            try:
+                if self.connect(do_reset=False):
+                    self._setup_tunnel()
+                    return True
+            except Exception as e:
+                print(f"[USB Tunnel] Reconnect attempt {attempt + 1} failed: {e}")
+            time.sleep(1.0)
+        return False
 
     def _setup_tunnel(self):
         """Set Interface 1 to AltSetting 1 (Bulk endpoints).
@@ -136,6 +166,30 @@ class USBHTTPTunnel:
             else:
                 self.ep_out = ep
 
+    def _exchange(self, req: bytes) -> bytes:
+        """Write one raw HTTP request to the tunnel and read the reply.
+
+        Returns b"" if the write failed or the printer sent nothing back
+        (the usual sign that the USB handle went stale).
+        """
+        try:
+            if self.ep_out is None or self.ep_in is None or self.dev is None:
+                return b""
+            self.ep_out.write(req, timeout=10000)
+        except Exception:
+            return b""
+
+        all_data = bytearray()
+        for _ in range(50):
+            time.sleep(0.1)
+            try:
+                chunk = bytes(self.dev.read(self.ep_in, 2048, timeout=500))
+                all_data.extend(chunk)
+            except Exception:
+                if all_data:
+                    break
+        return bytes(all_data)
+
     def request(self, method: str, path: str, headers: dict = None,
                 body: bytes = b"") -> tuple:
         """
@@ -169,31 +223,23 @@ class USBHTTPTunnel:
             if body:
                 req += body
 
-            # Send
-            try:
-                self.ep_out.write(req, timeout=10000)
-            except Exception:
-                return (0, {}, b"")
+            # Send + read. If the printer re-enumerated (e.g. CUPS pushed a
+            # print job through the same device, or a USB hiccup), the old
+            # handle is dead and every request comes back empty — reconnect
+            # once and retry instead of dying until the process is restarted.
+            resp = self._exchange(req)
+            if not resp:
+                print("[USB Tunnel] No response — reconnecting USB and retrying")
+                if self.reopen():
+                    resp = self._exchange(req)
 
-            # Read response
-            all_data = bytearray()
-            for _ in range(50):
-                time.sleep(0.1)
-                try:
-                    chunk = bytes(self.dev.read(self.ep_in, 2048, timeout=500))
-                    all_data.extend(chunk)
-                except Exception:
-                    if len(all_data) > 0:
-                        break
-
-            # Parse response
-            resp = bytes(all_data)
             if not resp:
                 return (0, {}, b"")
 
             header_end = resp.find(b"\r\n\r\n")
             if header_end < 0:
                 return (0, {}, resp)
+
 
             # Parse status line
             status_line = resp[:resp.find(b"\r\n")].decode("utf-8", errors="replace")
@@ -225,13 +271,23 @@ class USBHTTPTunnel:
 
     def login(self, password: str) -> bool:
         """Log in to printer web interface."""
+        from urllib.parse import urlencode
+
         self.password = password
-        body = f"B126={password}&loginurl=/general/status.html"
+        # The password MUST be form-encoded: '&', '=', '+', '%' or '#' inside a
+        # raw value would be misparsed by the printer's CGI and rejected as a
+        # wrong password.
+        body = urlencode({"B126": password,
+                          "loginurl": "/general/status.html"})
         status, headers, resp_body = self.request(
             "POST", "/general/status.html",
             {"Content-Type": "application/x-www-form-urlencoded"},
             body.encode()
         )
+        if "passerror" in headers.get("location", ""):
+            print("  ❌ Printer rejected the password "
+                  f"(HTTP {status} -> {headers.get('location')})")
+            return False
         # Follow the redirect to establish session
         self.request("GET", "/general/status.html")
         return bool(self.cookie)

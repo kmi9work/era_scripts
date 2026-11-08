@@ -19,6 +19,10 @@
 #   era_list_games [--verbose]         — пронумерованный список игр
 #   era_resolve_game <номер|ключ|имя>  — выставить ERA_GAME_KEY/ERA_GAME_ENGINE/ERA_GAME_SEEDS
 #   era_plugin_dir <репо> <ключ>       — каталог плагина игры в клиенте (или код 1)
+#   era_client_games <репо>            — игры, доступные в клиенте (base-game + его плагины)
+#   era_client_game_description <репо> <ключ> — строка описания для меню клиента
+#   era_resolve_client_game <репо> <номер|ключ|имя> — выбор игры в пределах клиента
+#   era_android_flavor <репо> <ключ>   — имя productFlavor по buildConfigField ACTIVE_GAME
 #   era_engine_names                   — имена всех движков
 #   era_engine_key <движок>            — ключ игры движка
 #   era_plugin_names <репо>            — имена всех плагинов клиента
@@ -161,6 +165,118 @@ era_plugin_dir() {
         fi
     done
     return 1
+}
+
+# Игры, которые можно собрать/запустить в клиенте <репо>: base-game плюс все
+# игры, у которых в этом клиенте есть каталог плагина. Порядок — как в реестре.
+era_client_games() {
+    local repo="$1" key
+    for key in "${ERA_GAME_KEYS[@]}"; do
+        if [ "$key" = "base-game" ] || era_plugin_dir "$repo" "$key" >/dev/null 2>&1; then
+            printf '%s\n' "$key"
+        fi
+    done
+}
+
+# Строка описания игры для меню клиента: движок + каталог плагина.
+era_client_game_description() {
+    local repo="$1" key="$2" engine plugin
+    engine="${ERA_ENGINE_BY_KEY[$key]:-}"
+    plugin="$(era_plugin_dir "$repo" "$key" 2>/dev/null || true)"
+    printf 'движок: %s; плагин: %s' "${engine:-—}" "${plugin:-—}"
+}
+
+# Разбор выбора игры В ПРЕДЕЛАХ клиента: номер из меню клиента, ключ игры,
+# имя движка или имя каталога плагина. Выставляет ERA_GAME_KEY,
+# ERA_GAME_ENGINE, ERA_GAME_SEEDS.
+#   0 — выбрано; 1 — не найдено; 2 — игра есть в платформе, но не в клиенте.
+era_resolve_client_game() {
+    local repo="$1" answer="$2" key want idx
+    local -a games=()
+    while IFS= read -r key; do
+        [ -n "$key" ] && games+=("$key")
+    done < <(era_client_games "$repo")
+    [ "${#games[@]}" -gt 0 ] || return 1
+
+    ERA_GAME_KEY=""
+    if [[ "$answer" =~ ^[0-9]+$ ]]; then
+        idx=$((answer - 1))
+        if [ "$idx" -lt 0 ] || [ "$idx" -ge "${#games[@]}" ]; then
+            return 1
+        fi
+        ERA_GAME_KEY="${games[$idx]}"
+    else
+        era_resolve_game "$answer" || return 1
+        want="$ERA_GAME_KEY"
+        ERA_GAME_KEY=""
+        for key in "${games[@]}"; do
+            if [ "$key" = "$want" ]; then
+                ERA_GAME_KEY="$key"
+                break
+            fi
+        done
+        [ -n "$ERA_GAME_KEY" ] || { ERA_GAME_KEY="$want"; return 2; }
+    fi
+
+    ERA_GAME_ENGINE="${ERA_ENGINE_BY_KEY[$ERA_GAME_KEY]:-}"
+    ERA_GAME_SEEDS="${ERA_SEEDS_BY_KEY[$ERA_GAME_KEY]:-}"
+    return 0
+}
+
+# Имя productFlavor Android-клиента <репо>, у которого buildConfigField
+# ACTIVE_GAME совпадает с ключом игры <ключ>; печатает имя flavor как в
+# build.gradle или ничего (код 1). Экранирование кавычек встречается и
+# одинарное, и двойное, поэтому значение вырезается, а не сравнивается по маске.
+era_android_flavor() {
+    local repo="$1" key="$2"
+    local gradle="$repo/android/app/build.gradle"
+    [ -f "$gradle" ] || return 1
+
+    awk -v key="$key" '
+        {
+            line = $0
+            sub(/\/\/.*/, "", line)
+
+            # объявление flavor: NAME { на уровень ниже productFlavors {
+            if (pf >= 0 && depth == pf + 1 && flavor == "" &&
+                match(line, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\{/)) {
+                f = line
+                sub(/^[[:space:]]*/, "", f)
+                sub(/[[:space:]]*\{.*/, "", f)
+                flavor = f
+            }
+
+            # строка buildConfigField "String", "ACTIVE_GAME", "<ключ>"
+            if (pf >= 0 && flavor != "" && index(line, "ACTIVE_GAME") > 0) {
+                val = line
+                gsub(/\\/, "", val)
+                sub(/^.*ACTIVE_GAME[^,]*,[[:space:]]*/, "", val)
+                gsub(/"/, "", val)
+                gsub(/[[:space:]]/, "", val)
+                if (val == key) {
+                    print flavor
+                    exit
+                }
+            }
+
+            if (index(line, "productFlavors") > 0) {
+                pf = depth
+            }
+
+            opens = gsub(/\{/, "{", line)
+            closes = gsub(/\}/, "}", line)
+            depth += opens - closes
+
+            # вернулись на уровень flavor (закрылся его блок) — сбрасываем имя;
+            # вышли из productFlavors — сбрасываем весь разбор
+            if (pf >= 0 && depth <= pf) {
+                pf = -1
+                flavor = ""
+            } else if (pf >= 0 && depth == pf + 1) {
+                flavor = ""
+            }
+        }
+    ' "$gradle"
 }
 
 # --- Реестр игр --------------------------------------------------------------
